@@ -88,6 +88,9 @@ int dailyLosses = 0;
 bool tradingPaused = false;
 string lastErrorMsg = "";
 
+//--- Track processed deals to avoid counting same deal multiple times
+ulong lastProcessedDeal = 0;
+
 //--- News time arrays (simplified approach - user should update these)
 datetime newsEvents[];
 int newsEventsCount = 0;
@@ -151,6 +154,9 @@ void OnTick()
 {
     // Check for new day
     CheckNewDay();
+    
+    // Update daily statistics from closed deals
+    UpdateDailyStatistics();
     
     // Update indicators
     if(!UpdateIndicators())
@@ -270,19 +276,21 @@ int GetEntrySignal()
     bool priceNearLowerBB = (currentPrice - bbLower[0]) < (atrBuffer[0] * 0.5);
     bool priceNearUpperBB = (bbUpper[0] - currentPrice) < (atrBuffer[0] * 0.5);
     
-    // Volatility check
+    // Volatility check - prefer trading in higher volatility
     bool highVolatility = atrBuffer[0] > atrBuffer[1] * 1.1;
     
     // Buy signal conditions
     if((bullishSweep || (macdBullish && priceBelowLowerBB)) && 
-       (priceNearLowerBB || priceBelowLowerBB))
+       (priceNearLowerBB || priceBelowLowerBB) &&
+       (highVolatility || bullishSweep)) // Prefer high volatility or strong sweep
     {
         return 1; // Buy
     }
     
     // Sell signal conditions
     if((bearishSweep || (macdBearish && priceAboveUpperBB)) && 
-       (priceNearUpperBB || priceAboveUpperBB))
+       (priceNearUpperBB || priceAboveUpperBB) &&
+       (highVolatility || bearishSweep)) // Prefer high volatility or strong sweep
     {
         return -1; // Sell
     }
@@ -642,6 +650,54 @@ bool CheckDailyLossLimit()
 }
 
 //+------------------------------------------------------------------+
+//| Update daily statistics from history                             |
+//+------------------------------------------------------------------+
+void UpdateDailyStatistics()
+{
+    // Check history for new closed deals
+    HistorySelect(dailyStartTime, TimeCurrent());
+    
+    int totalDeals = HistoryDealsTotal();
+    
+    for(int i = 0; i < totalDeals; i++)
+    {
+        ulong dealTicket = HistoryDealGetTicket(i);
+        
+        if(dealTicket <= 0)
+            continue;
+            
+        // Skip if already processed
+        if(dealTicket <= lastProcessedDeal)
+            continue;
+            
+        // Check if this is our EA's deal
+        string symbol = HistoryDealGetString(dealTicket, DEAL_SYMBOL);
+        if(symbol != _Symbol)
+            continue;
+            
+        // Check if this is an exit deal (not entry)
+        ENUM_DEAL_ENTRY dealEntry = (ENUM_DEAL_ENTRY)HistoryDealGetInteger(dealTicket, DEAL_ENTRY);
+        if(dealEntry != DEAL_ENTRY_OUT)
+            continue;
+        
+        // Get profit
+        double profit = HistoryDealGetDouble(dealTicket, DEAL_PROFIT);
+        double swap = HistoryDealGetDouble(dealTicket, DEAL_SWAP);
+        double commission = HistoryDealGetDouble(dealTicket, DEAL_COMMISSION);
+        double totalProfit = profit + swap + commission;
+        
+        // Update statistics
+        if(totalProfit > 0)
+            dailyWins++;
+        else
+            dailyLosses++;
+        
+        // Update last processed deal
+        lastProcessedDeal = dealTicket;
+    }
+}
+
+//+------------------------------------------------------------------+
 //| Check for new day and reset daily counters                       |
 //+------------------------------------------------------------------+
 void CheckNewDay()
@@ -661,6 +717,7 @@ void CheckNewDay()
         dailyTrades = 0;
         dailyWins = 0;
         dailyLosses = 0;
+        lastProcessedDeal = 0;
         tradingPaused = false;
         
         Print("New trading day started. Previous day profit: ", dailyProfit);
@@ -677,8 +734,10 @@ void SendNotification(string message)
     // Send alert
     Alert(message);
     
-    // Optionally send push notification (requires setup in MT5)
-    // SendNotification(message);
+    // Optionally send MT5 push notification to mobile (requires configuration in Tools > Options)
+    // Uncomment and use MT5's built-in SendNotification() after setup:
+    // if(TerminalInfoInteger(TERMINAL_NOTIFICATIONS_ENABLED))
+    //     SendNotification(message);
 }
 
 //+------------------------------------------------------------------+
