@@ -1,0 +1,55 @@
+# MetaTrader 5 files
+*.ex5
+*.log
+
+# Compiled files
+*.compiled
+
+# Temporary files
+*.tmp
+*~
+.DS_Store
+Thumbs.db
+
+# Editor backup files
+*.bak
+*.swp
+*.swo
+
+# IDE files
+.vscode/
+.idea/
+*.sublime-*
+
+# Test results
+backtest_results/
+optimization_results/
+*.set
+*.tst
+
+# Personal configuration
+config.local.mqh
+personal_settings.mqh
+
+# OS files
+.DS_Store
+desktop.ini
+
+# Logs
+logs/
+*.log
+
+# Cache
+cache/
+*.cache
+
+# Build artifacts
+build/
+dist/
+
+# Documentation build
+docs/_build/
+
+# Environment files
+.env
+.env.local
