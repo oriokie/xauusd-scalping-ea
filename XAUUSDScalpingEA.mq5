@@ -27,6 +27,10 @@ input int MACD_Signal = 9;                   // MACD Signal
 input int BB_Period = 20;                    // Bollinger Bands Period
 input double BB_Deviation = 2.0;             // Bollinger Bands Deviation
 input int ATR_Period = 14;                   // ATR Period for volatility
+input bool UseRSI = true;                    // Use RSI filter
+input int RSI_Period = 14;                   // RSI Period
+input double RSI_Overbought = 70.0;          // RSI Overbought Level
+input double RSI_Oversold = 30.0;            // RSI Oversold Level
 
 //--- Take Profit and Stop Loss
 input group "=== Trade Settings ==="
@@ -74,10 +78,12 @@ CAccountInfo accountInfo;
 int macdHandle;
 int bbHandle;
 int atrHandle;
+int rsiHandle;
 
 double macdMain[], macdSignal[];
 double bbUpper[], bbMiddle[], bbLower[];
 double atrBuffer[];
+double rsiBuffer[];
 
 datetime lastBarTime;
 datetime dailyStartTime;
@@ -106,8 +112,9 @@ int OnInit()
     macdHandle = iMACD(_Symbol, PERIOD_CURRENT, MACD_Fast, MACD_Slow, MACD_Signal, PRICE_CLOSE);
     bbHandle = iBands(_Symbol, PERIOD_CURRENT, BB_Period, 0, BB_Deviation, PRICE_CLOSE);
     atrHandle = iATR(_Symbol, PERIOD_CURRENT, ATR_Period);
+    rsiHandle = iRSI(_Symbol, PERIOD_CURRENT, RSI_Period, PRICE_CLOSE);
     
-    if(macdHandle == INVALID_HANDLE || bbHandle == INVALID_HANDLE || atrHandle == INVALID_HANDLE)
+    if(macdHandle == INVALID_HANDLE || bbHandle == INVALID_HANDLE || atrHandle == INVALID_HANDLE || rsiHandle == INVALID_HANDLE)
     {
         Print("Error creating indicators");
         return(INIT_FAILED);
@@ -120,6 +127,7 @@ int OnInit()
     ArraySetAsSeries(bbMiddle, true);
     ArraySetAsSeries(bbLower, true);
     ArraySetAsSeries(atrBuffer, true);
+    ArraySetAsSeries(rsiBuffer, true);
     
     // Initialize daily tracking
     dailyStartTime = TimeCurrent();
@@ -142,6 +150,7 @@ void OnDeinit(const int reason)
     IndicatorRelease(macdHandle);
     IndicatorRelease(bbHandle);
     IndicatorRelease(atrHandle);
+    IndicatorRelease(rsiHandle);
     
     // Remove GUI objects
     DeleteInfoPanel();
@@ -252,6 +261,13 @@ bool UpdateIndicators()
         return false;
     }
     
+    // Copy RSI
+    if(CopyBuffer(rsiHandle, 0, 0, 3, rsiBuffer) <= 0)
+    {
+        lastErrorMsg = "Failed to copy RSI data";
+        return false;
+    }
+    
     return true;
 }
 
@@ -278,21 +294,34 @@ int GetEntrySignal()
     bool priceNearLowerBB = (currentPrice - bbLower[0]) < (atrBuffer[0] * 0.5);
     bool priceNearUpperBB = (bbUpper[0] - currentPrice) < (atrBuffer[0] * 0.5);
     
+    // RSI conditions
+    bool rsiOversold = rsiBuffer[0] < RSI_Oversold;
+    bool rsiOverbought = rsiBuffer[0] > RSI_Overbought;
+    bool rsiNeutral = (rsiBuffer[0] >= RSI_Oversold && rsiBuffer[0] <= RSI_Overbought);
+    
     // Volatility check - prefer trading in higher volatility
     bool highVolatility = atrBuffer[0] > atrBuffer[1] * 1.1;
     
     // Buy signal conditions
+    // RSI filter: Only buy when RSI is oversold or neutral (not overbought)
+    bool rsiBuyCondition = UseRSI ? (rsiOversold || rsiNeutral) : true;
+    
     if((bullishSweep || (macdBullish && priceBelowLowerBB)) && 
        (priceNearLowerBB || priceBelowLowerBB) &&
-       (highVolatility || bullishSweep)) // Prefer high volatility or strong sweep
+       (highVolatility || bullishSweep) && // Prefer high volatility or strong sweep
+       rsiBuyCondition) // RSI confirmation
     {
         return 1; // Buy
     }
     
     // Sell signal conditions
+    // RSI filter: Only sell when RSI is overbought or neutral (not oversold)
+    bool rsiSellCondition = UseRSI ? (rsiOverbought || rsiNeutral) : true;
+    
     if((bearishSweep || (macdBearish && priceAboveUpperBB)) && 
        (priceNearUpperBB || priceAboveUpperBB) &&
-       (highVolatility || bearishSweep)) // Prefer high volatility or strong sweep
+       (highVolatility || bearishSweep) && // Prefer high volatility or strong sweep
+       rsiSellCondition) // RSI confirmation
     {
         return -1; // Sell
     }
@@ -824,7 +853,7 @@ void CreateInfoPanel()
     ObjectSetInteger(0, prefix + "BG", OBJPROP_XDISTANCE, PanelX);
     ObjectSetInteger(0, prefix + "BG", OBJPROP_YDISTANCE, PanelY);
     ObjectSetInteger(0, prefix + "BG", OBJPROP_XSIZE, 300);
-    ObjectSetInteger(0, prefix + "BG", OBJPROP_YSIZE, 350);
+    ObjectSetInteger(0, prefix + "BG", OBJPROP_YSIZE, 375);
     ObjectSetInteger(0, prefix + "BG", OBJPROP_BGCOLOR, PanelColor);
     ObjectSetInteger(0, prefix + "BG", OBJPROP_BORDER_TYPE, BORDER_FLAT);
     ObjectSetInteger(0, prefix + "BG", OBJPROP_CORNER, CORNER_LEFT_UPPER);
@@ -842,8 +871,9 @@ void CreateInfoPanel()
     CreateLabel(prefix + "Session", "Session: Closed", PanelX + 10, PanelY + 210, 8, TextColor);
     CreateLabel(prefix + "ATR", "ATR: 0.00", PanelX + 10, PanelY + 235, 8, TextColor);
     CreateLabel(prefix + "MACD", "MACD: Neutral", PanelX + 10, PanelY + 260, 8, TextColor);
-    CreateLabel(prefix + "Signal", "Signal: None", PanelX + 10, PanelY + 285, 8, TextColor);
-    CreateLabel(prefix + "Error", "", PanelX + 10, PanelY + 310, 7, clrRed);
+    CreateLabel(prefix + "RSI", "RSI: 50.0", PanelX + 10, PanelY + 285, 8, TextColor);
+    CreateLabel(prefix + "Signal", "Signal: None", PanelX + 10, PanelY + 310, 8, TextColor);
+    CreateLabel(prefix + "Error", "", PanelX + 10, PanelY + 335, 7, clrRed);
 }
 
 //+------------------------------------------------------------------+
@@ -923,6 +953,25 @@ void UpdateInfoPanel()
     ObjectSetString(0, prefix + "MACD", OBJPROP_TEXT, "MACD: " + macdStatus);
     ObjectSetInteger(0, prefix + "MACD", OBJPROP_COLOR, macdColor);
     
+    // RSI
+    string rsiStatus = "Neutral";
+    color rsiColor = clrGray;
+    
+    if(rsiBuffer[0] > RSI_Overbought)
+    {
+        rsiStatus = "Overbought";
+        rsiColor = clrRed;
+    }
+    else if(rsiBuffer[0] < RSI_Oversold)
+    {
+        rsiStatus = "Oversold";
+        rsiColor = clrLime;
+    }
+    
+    ObjectSetString(0, prefix + "RSI", OBJPROP_TEXT, 
+                    StringFormat("RSI: %.1f (%s)", rsiBuffer[0], rsiStatus));
+    ObjectSetInteger(0, prefix + "RSI", OBJPROP_COLOR, rsiColor);
+    
     // Signal
     int signal = GetEntrySignal();
     string signalText = signal == 1 ? "BUY" : (signal == -1 ? "SELL" : "None");
@@ -953,6 +1002,7 @@ void DeleteInfoPanel()
     ObjectDelete(0, prefix + "Session");
     ObjectDelete(0, prefix + "ATR");
     ObjectDelete(0, prefix + "MACD");
+    ObjectDelete(0, prefix + "RSI");
     ObjectDelete(0, prefix + "Signal");
     ObjectDelete(0, prefix + "Error");
 }
