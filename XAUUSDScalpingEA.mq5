@@ -32,6 +32,8 @@ input int ATR_Period = 14;                   // ATR Period for volatility
 input group "=== Trade Settings ==="
 input double TP_ATR_Multiplier = 1.5;        // Take Profit ATR Multiplier
 input double SL_ATR_Multiplier = 1.0;        // Stop Loss ATR Multiplier
+input double MinStopLossPoints = 30;         // Minimum Stop Loss in points
+input double MinRiskRewardRatio = 1.5;       // Minimum Risk/Reward Ratio
 input bool UseTrailingStop = true;           // Use Trailing Stop
 input double TrailingStopATR = 1.0;          // Trailing Stop ATR Multiplier
 input double TrailingStepATR = 0.5;          // Trailing Step ATR Multiplier
@@ -372,9 +374,25 @@ void ExecuteBuyOrder()
     double atr = atrBuffer[0];
     double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
     
-    // Calculate SL and TP
+    // Calculate SL and TP with minimum distance validation
     double slDistance = atr * SL_ATR_Multiplier;
+    double minSlDistance = MinStopLossPoints * point;
+    
+    // Ensure stop loss is not too tight
+    if(slDistance < minSlDistance)
+    {
+        slDistance = minSlDistance;
+        Print("Warning: ATR-based SL too tight, using minimum SL distance: ", MinStopLossPoints, " points");
+    }
+    
     double tpDistance = atr * TP_ATR_Multiplier;
+    
+    // Ensure TP is at least MinRiskRewardRatio times SL for good risk/reward
+    if(tpDistance < slDistance * MinRiskRewardRatio)
+    {
+        tpDistance = slDistance * MinRiskRewardRatio;
+        Print("Warning: Adjusting TP to maintain ", MinRiskRewardRatio, ":1 reward/risk ratio");
+    }
     
     double sl = ask - slDistance;
     double tp = ask + tpDistance;
@@ -395,6 +413,8 @@ void ExecuteBuyOrder()
     if(trade.Buy(lotSize, _Symbol, ask, sl, tp, "XAUUSD Scalp Buy"))
     {
         dailyTrades++;
+        Print(StringFormat("BUY order #%I64u executed at %.2f, SL: %.2f (%.1f pts), TP: %.2f (%.1f pts), Lot: %.2f", 
+              trade.ResultOrder(), ask, sl, slDistance/point, tp, tpDistance/point, lotSize));
         SendEANotification(StringFormat("BUY order executed at %.2f, Lot: %.2f", ask, lotSize));
     }
     else
@@ -413,9 +433,25 @@ void ExecuteSellOrder()
     double atr = atrBuffer[0];
     double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
     
-    // Calculate SL and TP
+    // Calculate SL and TP with minimum distance validation
     double slDistance = atr * SL_ATR_Multiplier;
+    double minSlDistance = MinStopLossPoints * point;
+    
+    // Ensure stop loss is not too tight
+    if(slDistance < minSlDistance)
+    {
+        slDistance = minSlDistance;
+        Print("Warning: ATR-based SL too tight, using minimum SL distance: ", MinStopLossPoints, " points");
+    }
+    
     double tpDistance = atr * TP_ATR_Multiplier;
+    
+    // Ensure TP is at least MinRiskRewardRatio times SL for good risk/reward
+    if(tpDistance < slDistance * MinRiskRewardRatio)
+    {
+        tpDistance = slDistance * MinRiskRewardRatio;
+        Print("Warning: Adjusting TP to maintain ", MinRiskRewardRatio, ":1 reward/risk ratio");
+    }
     
     double sl = bid + slDistance;
     double tp = bid - tpDistance;
@@ -436,6 +472,8 @@ void ExecuteSellOrder()
     if(trade.Sell(lotSize, _Symbol, bid, sl, tp, "XAUUSD Scalp Sell"))
     {
         dailyTrades++;
+        Print(StringFormat("SELL order #%I64u executed at %.2f, SL: %.2f (%.1f pts), TP: %.2f (%.1f pts), Lot: %.2f", 
+              trade.ResultOrder(), bid, sl, slDistance/point, tp, tpDistance/point, lotSize));
         SendEANotification(StringFormat("SELL order executed at %.2f, Lot: %.2f", bid, lotSize));
     }
     else
@@ -486,13 +524,17 @@ void ManageOpenPositions()
                 ApplyTrailingStop(ticket, posType, currentPrice, currentSL);
             }
             
-            // Mean reversion exit
-            if(UseMeanReversion && profitPoints > MinProfitPoints)
+            // Mean reversion exit - only apply if sufficient profit
+            if(UseMeanReversion && profitPoints > MinProfitPoints * 1.5)
             {
                 if(CheckMeanReversionExit(posType))
                 {
-                    trade.PositionClose(ticket);
-                    SendEANotification(StringFormat("Position #%I64u closed by mean reversion at profit: %.2f points", ticket, profitPoints));
+                    if(trade.PositionClose(ticket))
+                    {
+                        Print(StringFormat("Position #%I64u closed by mean reversion. Entry: %.2f, Exit: %.2f, Profit: %.2f points, $%.2f", 
+                              ticket, openPrice, currentPrice, profitPoints, profit));
+                        SendEANotification(StringFormat("Position #%I64u closed by mean reversion at profit: %.2f points", ticket, profitPoints));
+                    }
                 }
             }
         }
@@ -509,24 +551,41 @@ void ApplyTrailingStop(ulong ticket, ENUM_POSITION_TYPE posType, double currentP
     double trailStep = atr * TrailingStepATR;
     double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
     
+    // Ensure minimum trailing distances to prevent too-tight trailing
+    double minTrailDistance = MinStopLossPoints * point;
+    if(trailDistance < minTrailDistance)
+    {
+        trailDistance = minTrailDistance;
+    }
+    
     double newSL = 0;
     
     if(posType == POSITION_TYPE_BUY)
     {
         newSL = currentPrice - trailDistance;
         
+        // Only move SL up, never down, and only if improvement is significant
         if(newSL > currentSL + trailStep || currentSL == 0)
         {
-            trade.PositionModify(ticket, newSL, positionInfo.TakeProfit());
+            if(trade.PositionModify(ticket, newSL, positionInfo.TakeProfit()))
+            {
+                Print(StringFormat("Position #%I64u: Trailing stop updated to %.2f (moved %.1f pts)", 
+                      ticket, newSL, (newSL - currentSL)/point));
+            }
         }
     }
     else // SELL
     {
         newSL = currentPrice + trailDistance;
         
+        // Only move SL down, never up, and only if improvement is significant
         if(newSL < currentSL - trailStep || currentSL == 0)
         {
-            trade.PositionModify(ticket, newSL, positionInfo.TakeProfit());
+            if(trade.PositionModify(ticket, newSL, positionInfo.TakeProfit()))
+            {
+                Print(StringFormat("Position #%I64u: Trailing stop updated to %.2f (moved %.1f pts)", 
+                      ticket, newSL, (currentSL - newSL)/point));
+            }
         }
     }
 }
@@ -542,17 +601,30 @@ bool CheckMeanReversionExit(ENUM_POSITION_TYPE posType)
     
     // Check if price is reverting to mean (middle BB)
     double bbMid = bbMiddle[0];
-    double threshold = atrBuffer[0] * 0.2;
+    double bbUpr = bbUpper[0];
+    double bbLwr = bbLower[0];
+    
+    // Use larger threshold to avoid premature exits
+    // Exit only when price crosses beyond the middle BB, not just approaches it
+    double threshold = atrBuffer[0] * 0.3;
     
     if(posType == POSITION_TYPE_BUY)
     {
-        // Exit buy if price is near or above middle BB
-        return (currentPrice >= bbMid - threshold);
+        // Exit buy only if price is significantly above middle BB or approaching upper BB
+        // This prevents premature mean reversion exits
+        bool crossedMiddle = (currentPrice > bbMid + threshold);
+        bool nearUpperBB = (currentPrice > bbUpr - threshold);
+        
+        return (crossedMiddle || nearUpperBB);
     }
     else
     {
-        // Exit sell if price is near or below middle BB
-        return (currentPrice <= bbMid + threshold);
+        // Exit sell only if price is significantly below middle BB or approaching lower BB
+        // This prevents premature mean reversion exits
+        bool crossedMiddle = (currentPrice < bbMid - threshold);
+        bool nearLowerBB = (currentPrice < bbLwr + threshold);
+        
+        return (crossedMiddle || nearLowerBB);
     }
 }
 

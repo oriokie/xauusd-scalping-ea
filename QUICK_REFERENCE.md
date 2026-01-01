@@ -57,6 +57,7 @@ Max Positions: 1
 ```
 RiskPercentage: 0.5%
 SL_ATR_Multiplier: 1.5
+MinStopLossPoints: 40
 MaxPositions: 1
 ```
 

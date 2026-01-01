@@ -94,6 +94,8 @@ A fully functional and advanced Expert Advisor (EA) designed specifically for sc
 |-----------|---------|-------------|
 | TP_ATR_Multiplier | 1.5 | Take Profit as multiple of ATR |
 | SL_ATR_Multiplier | 1.0 | Stop Loss as multiple of ATR |
+| MinStopLossPoints | 30 | Minimum Stop Loss in points (prevents too-tight stops) |
+| MinRiskRewardRatio | 1.5 | Minimum Risk/Reward Ratio (TP must be at least this times SL) |
 | UseTrailingStop | true | Enable/disable trailing stop |
 | TrailingStopATR | 1.0 | Trailing stop distance (ATR multiple) |
 | TrailingStepATR | 0.5 | Trailing step size (ATR multiple) |
