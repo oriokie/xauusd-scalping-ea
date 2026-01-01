@@ -47,6 +47,9 @@ Max Positions: 1
 | **ATR** | Current volatility measure |
 | **MACD: Bullish** 🟢 | Upward momentum |
 | **MACD: Bearish** 🔴 | Downward momentum |
+| **RSI: Oversold** 🟢 | Below 30 (buy opportunity) |
+| **RSI: Overbought** 🔴 | Above 70 (sell opportunity) |
+| **RSI: Neutral** ⚪ | Between 30-70 |
 | **Signal: BUY** 🟢 | Buy conditions met |
 | **Signal: SELL** 🔴 | Sell conditions met |
 | **Signal: None** ⚪ | No clear signal |
@@ -73,6 +76,7 @@ MaxPositions: 2
 MACD_Fast: 8
 MACD_Slow: 17
 BB_Period: 15
+RSI_Period: 9
 ```
 
 ### Slower, More Reliable
@@ -80,6 +84,7 @@ BB_Period: 15
 MACD_Fast: 16
 MACD_Slow: 32
 BB_Period: 25
+RSI_Period: 21
 ```
 
 ## Trading Sessions (Adjust for Your Broker)
@@ -216,7 +221,7 @@ NewYorkEndHour: 17     (22 - 5)
 
 ## Version Check
 
-**Current Version:** 1.0.0
+**Current Version:** 1.2.0
 
 Check for updates:
 - Visit GitHub repository

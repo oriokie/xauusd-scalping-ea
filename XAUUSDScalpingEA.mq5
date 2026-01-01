@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "XAUUSD Scalping EA"
 #property link      ""
-#property version   "1.00"
+#property version   "1.20"
 #property strict
 
 #include <Trade\Trade.mqh>
