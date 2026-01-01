@@ -7,6 +7,7 @@ A fully functional and advanced Expert Advisor (EA) designed specifically for sc
 ### 1. **Early Entry Detection System**
 - **MACD Integration**: Detects momentum shifts and trend changes using configurable Fast, Slow, and Signal periods
 - **Bollinger Bands**: Identifies overbought/oversold conditions and volatility expansion/contraction
+- **RSI Filter**: Uses Relative Strength Index to confirm trade entries based on overbought (70) and oversold (30) levels
 - **Liquidity Sweep Detection**: Recognizes stop-hunt zones and fake breakouts for optimal entry timing
 - **Volatility-Aware Logic**: Uses ATR (Average True Range) for dynamic adjustment based on market conditions
 
@@ -88,6 +89,10 @@ A fully functional and advanced Expert Advisor (EA) designed specifically for sc
 | BB_Period | 20 | Bollinger Bands period |
 | BB_Deviation | 2.0 | Bollinger Bands standard deviation |
 | ATR_Period | 14 | ATR period for volatility measurement |
+| UseRSI | true | Enable/disable RSI filter |
+| RSI_Period | 14 | RSI period for momentum measurement |
+| RSI_Overbought | 70.0 | RSI overbought level (sell filter) |
+| RSI_Oversold | 30.0 | RSI oversold level (buy filter) |
 
 ### Trade Settings
 | Parameter | Default | Description |
@@ -149,7 +154,12 @@ The EA uses a multi-factor approach to identify high-probability entry points:
    - Buy signals when price is near or below lower band
    - Sell signals when price is near or above upper band
 
-4. **Volatility Check**:
+4. **RSI Filter**:
+   - Buy signals only when RSI is oversold (<30) or neutral (30-70)
+   - Sell signals only when RSI is overbought (>70) or neutral (30-70)
+   - Prevents buying when market is already overbought and selling when oversold
+
+5. **Volatility Check**:
    - Uses ATR to confirm sufficient market movement
    - Adapts to changing volatility conditions
 
@@ -174,6 +184,7 @@ The EA provides real-time performance metrics via the on-chart panel:
 - **Session Status**: Whether trading session is active
 - **ATR**: Current volatility measurement
 - **MACD Signal**: Current trend direction
+- **RSI**: Current RSI value with status (Overbought/Oversold/Neutral)
 - **Entry Signal**: Current buy/sell/neutral signal
 
 ## 🔧 Customization Tips

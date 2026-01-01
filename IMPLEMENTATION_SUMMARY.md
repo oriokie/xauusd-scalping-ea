@@ -6,11 +6,16 @@ This project delivers a complete, production-ready Expert Advisor for MetaTrader
 ## ✅ All Requirements Implemented
 
 ### 1. Early Entry Detection ✅
-**Requirement:** Utilize MACD, Bollinger Bands, and price action to detect liquidity sweeps
+**Requirement:** Utilize MACD, Bollinger Bands, RSI, and price action to detect liquidity sweeps
 
 **Implementation:**
 - ✅ MACD indicator (12/26/9) for momentum detection
 - ✅ Bollinger Bands (20/2.0) for volatility and overbought/oversold
+- ✅ RSI indicator (14 period) for momentum confirmation
+  - Configurable overbought level (default: 70)
+  - Configurable oversold level (default: 30)
+  - Buy filter: RSI oversold or neutral (not overbought)
+  - Sell filter: RSI overbought or neutral (not oversold)
 - ✅ Liquidity sweep algorithm detecting stop-hunt zones
   - Bullish sweeps: Price breaks low then reverses up
   - Bearish sweeps: Price breaks high then reverses down
@@ -18,7 +23,7 @@ This project delivers a complete, production-ready Expert Advisor for MetaTrader
 - ✅ Multi-factor signal confirmation
 - ✅ High volatility preference in entry logic
 
-**Code Location:** Lines 240-295 (GetEntrySignal, DetectLiquiditySweep functions)
+**Code Location:** Lines 240-330 (GetEntrySignal, DetectLiquiditySweep functions)
 
 ### 2. Risk Management ✅
 **Requirement:** Compute lot size dynamically based on percentage risk, implement daily loss limit
@@ -83,14 +88,14 @@ This project delivers a complete, production-ready Expert Advisor for MetaTrader
 - ✅ Real-time information panel on chart
 - ✅ Displays: Status, Balance, Daily P/L, Trades, Win Rate
 - ✅ Shows: Open Positions, Spread, Session Status
-- ✅ Indicators: ATR, MACD direction, Entry signals
+- ✅ Indicators: ATR, MACD direction, RSI value and status, Entry signals
 - ✅ Error message display
 - ✅ Color-coded status (Green/Red/Orange)
 - ✅ Customizable position and colors
 - ✅ Show/hide option
 - ✅ Dynamic updates every tick
 
-**Code Location:** Lines 740-850 (CreateInfoPanel, UpdateInfoPanel, DeleteInfoPanel)
+**Code Location:** Lines 850-1010 (CreateInfoPanel, UpdateInfoPanel, DeleteInfoPanel)
 
 ### 7. Logging and Notification System ✅
 **Requirement:** Audit trail with alerts for SL/TP hits and market conditions
@@ -153,14 +158,14 @@ This project delivers a complete, production-ready Expert Advisor for MetaTrader
 
 ### User-Adjustable Parameters (No Code Changes Required)
 1. **Risk Management:** 3 parameters
-2. **Indicator Settings:** 6 parameters
+2. **Indicator Settings:** 10 parameters (MACD, BB, ATR, RSI)
 3. **Trade Settings:** 5 parameters
 4. **Trading Sessions:** 6 parameters
 5. **News Filter:** 2 parameters
 6. **Scalping Settings:** 3 parameters
 7. **GUI Settings:** 5 parameters
 
-**Total:** 30 configurable parameters
+**Total:** 34 configurable parameters
 
 ## Testing Recommendations Provided
 

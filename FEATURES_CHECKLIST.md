@@ -5,6 +5,11 @@
 ### 1. Early Entry Detection ✅
 - [x] MACD indicator integration (Fast: 12, Slow: 26, Signal: 9)
 - [x] Bollinger Bands indicator (Period: 20, Deviation: 2.0)
+- [x] RSI indicator integration (Period: 14, Overbought: 70, Oversold: 30)
+  - [x] RSI filter for buy signals (oversold or neutral)
+  - [x] RSI filter for sell signals (overbought or neutral)
+  - [x] Configurable RSI parameters
+  - [x] Enable/disable RSI filter option
 - [x] Price action analysis for entry signals
 - [x] Liquidity sweep detection (stop-hunt zones)
   - [x] Bullish sweep detection (breaks low, reverses up)
@@ -79,6 +84,7 @@
   - [x] Session status indicator
   - [x] ATR value display
   - [x] MACD signal indicator
+  - [x] RSI value and status display
   - [x] Entry signal display
   - [x] Error message display
 - [x] Customizable panel
@@ -145,7 +151,7 @@
 
 | Requirement | Status | Implementation |
 |------------|--------|----------------|
-| Early Entry Detection | ✅ Complete | MACD, BB, Liquidity Sweeps, ATR |
+| Early Entry Detection | ✅ Complete | MACD, BB, RSI, Liquidity Sweeps, ATR |
 | Risk Management | ✅ Complete | Percentage-based, Daily limits |
 | Trade Execution | ✅ Complete | Market orders, ATR-based SL/TP, Trailing |
 | Session Filtering | ✅ Complete | London/NY sessions, configurable |

@@ -5,6 +5,29 @@ All notable changes to the XAUUSD Scalping EA will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-01-01
+
+### Added
+- **RSI Integration:** Integrated Relative Strength Index (RSI) as a momentum oscillator for enhanced trade filtering
+  - New parameter `UseRSI` (default: true) to enable/disable RSI filter
+  - New parameter `RSI_Period` (default: 14) for RSI calculation period
+  - New parameter `RSI_Overbought` (default: 70.0) for overbought threshold
+  - New parameter `RSI_Oversold` (default: 30.0) for oversold threshold
+  - Buy signals only trigger when RSI is oversold (<30) or neutral (30-70), preventing buys in overbought conditions
+  - Sell signals only trigger when RSI is overbought (>70) or neutral (30-70), preventing sells in oversold conditions
+  - RSI value and status (Overbought/Oversold/Neutral) displayed in GUI panel
+  - Color-coded RSI indicator: Green (Oversold), Red (Overbought), Gray (Neutral)
+
+### Changed
+- Updated GUI panel height from 350 to 375 pixels to accommodate RSI display
+- Enhanced entry signal logic with RSI confirmation for better accuracy
+- Improved multi-indicator confirmation system with RSI as additional filter
+
+### Improved
+- More accurate trade entry timing with RSI momentum confirmation
+- Reduced false signals by filtering against extreme RSI conditions
+- Better alignment with market momentum through RSI analysis
+
 ## [1.1.0] - 2026-01-01
 
 ### Fixed
