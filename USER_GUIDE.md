@@ -89,6 +89,7 @@ Trade Settings:
 - TP_ATR_Multiplier: 1.5
 - SL_ATR_Multiplier: 1.0
 - MinStopLossPoints: 30 (prevents too-tight stops)
+- MinRiskRewardRatio: 1.5 (ensures favorable risk/reward)
 - UseTrailingStop: true
 - TrailingStopATR: 1.0
 

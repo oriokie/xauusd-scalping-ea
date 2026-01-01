@@ -33,6 +33,7 @@ input group "=== Trade Settings ==="
 input double TP_ATR_Multiplier = 1.5;        // Take Profit ATR Multiplier
 input double SL_ATR_Multiplier = 1.0;        // Stop Loss ATR Multiplier
 input double MinStopLossPoints = 30;         // Minimum Stop Loss in points
+input double MinRiskRewardRatio = 1.5;       // Minimum Risk/Reward Ratio
 input bool UseTrailingStop = true;           // Use Trailing Stop
 input double TrailingStopATR = 1.0;          // Trailing Stop ATR Multiplier
 input double TrailingStepATR = 0.5;          // Trailing Step ATR Multiplier
@@ -386,11 +387,11 @@ void ExecuteBuyOrder()
     
     double tpDistance = atr * TP_ATR_Multiplier;
     
-    // Ensure TP is at least 1.5x SL for good risk/reward
-    if(tpDistance < slDistance * 1.5)
+    // Ensure TP is at least MinRiskRewardRatio times SL for good risk/reward
+    if(tpDistance < slDistance * MinRiskRewardRatio)
     {
-        tpDistance = slDistance * 1.5;
-        Print("Warning: Adjusting TP to maintain 1.5:1 reward/risk ratio");
+        tpDistance = slDistance * MinRiskRewardRatio;
+        Print("Warning: Adjusting TP to maintain ", MinRiskRewardRatio, ":1 reward/risk ratio");
     }
     
     double sl = ask - slDistance;
@@ -445,11 +446,11 @@ void ExecuteSellOrder()
     
     double tpDistance = atr * TP_ATR_Multiplier;
     
-    // Ensure TP is at least 1.5x SL for good risk/reward
-    if(tpDistance < slDistance * 1.5)
+    // Ensure TP is at least MinRiskRewardRatio times SL for good risk/reward
+    if(tpDistance < slDistance * MinRiskRewardRatio)
     {
-        tpDistance = slDistance * 1.5;
-        Print("Warning: Adjusting TP to maintain 1.5:1 reward/risk ratio");
+        tpDistance = slDistance * MinRiskRewardRatio;
+        Print("Warning: Adjusting TP to maintain ", MinRiskRewardRatio, ":1 reward/risk ratio");
     }
     
     double sl = bid + slDistance;
