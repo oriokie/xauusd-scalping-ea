@@ -177,7 +177,7 @@ void OnTick()
     if(!CheckDailyLossLimit())
     {
         tradingPaused = true;
-        SendNotification("Trading paused: Daily loss limit reached");
+        SendEANotification("Trading paused: Daily loss limit reached");
         return;
     }
     
@@ -395,7 +395,7 @@ void ExecuteBuyOrder()
     if(trade.Buy(lotSize, _Symbol, ask, sl, tp, "XAUUSD Scalp Buy"))
     {
         dailyTrades++;
-        SendNotification(StringFormat("BUY order executed at %.2f, Lot: %.2f", ask, lotSize));
+        SendEANotification(StringFormat("BUY order executed at %.2f, Lot: %.2f", ask, lotSize));
     }
     else
     {
@@ -436,7 +436,7 @@ void ExecuteSellOrder()
     if(trade.Sell(lotSize, _Symbol, bid, sl, tp, "XAUUSD Scalp Sell"))
     {
         dailyTrades++;
-        SendNotification(StringFormat("SELL order executed at %.2f, Lot: %.2f", bid, lotSize));
+        SendEANotification(StringFormat("SELL order executed at %.2f, Lot: %.2f", bid, lotSize));
     }
     else
     {
@@ -492,7 +492,7 @@ void ManageOpenPositions()
                 if(CheckMeanReversionExit(posType))
                 {
                     trade.PositionClose(ticket);
-                    SendNotification(StringFormat("Position #%I64u closed by mean reversion at profit: %.2f points", ticket, profitPoints));
+                    SendEANotification(StringFormat("Position #%I64u closed by mean reversion at profit: %.2f points", ticket, profitPoints));
                 }
             }
         }
@@ -725,9 +725,9 @@ void CheckNewDay()
 }
 
 //+------------------------------------------------------------------+
-//| Send notification                                                 |
+//| Send EA notification                                              |
 //+------------------------------------------------------------------+
-void SendNotification(string message)
+void SendEANotification(string message)
 {
     Print(message);
     
