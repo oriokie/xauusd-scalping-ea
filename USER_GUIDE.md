@@ -51,17 +51,19 @@ The EA enters a trade when **multiple conditions align**:
 1. **Liquidity Sweep Detection**: Price breaks below previous low, then reverses up sharply
    - OR MACD crosses above signal line while price is below lower Bollinger Band
 2. **Price Position**: Price is near or below lower Bollinger Band
-3. **Session Active**: Within London or New York session hours
-4. **Spread Check**: Current spread is below maximum threshold
-5. **No News**: Not within news buffer time window
+3. **RSI Filter**: RSI is oversold (<30) or neutral (30-70), NOT overbought
+4. **Session Active**: Within London or New York session hours
+5. **Spread Check**: Current spread is below maximum threshold
+6. **No News**: Not within news buffer time window
 
 #### Sell Signal Requirements:
 1. **Liquidity Sweep Detection**: Price breaks above previous high, then reverses down sharply
    - OR MACD crosses below signal line while price is above upper Bollinger Band
 2. **Price Position**: Price is near or above upper Bollinger Band
-3. **Session Active**: Within London or New York session hours
-4. **Spread Check**: Current spread is below maximum threshold
-5. **No News**: Not within news buffer time window
+3. **RSI Filter**: RSI is overbought (>70) or neutral (30-70), NOT oversold
+4. **Session Active**: Within London or New York session hours
+5. **Spread Check**: Current spread is below maximum threshold
+6. **No News**: Not within news buffer time window
 
 ### Exit Strategy
 The EA can exit positions through multiple methods:
@@ -83,7 +85,8 @@ Risk Management:
 - MaxSpreadPoints: 50
 
 Indicator Settings:
-- Keep defaults (MACD: 12/26/9, BB: 20/2.0, ATR: 14)
+- Keep defaults (MACD: 12/26/9, BB: 20/2.0, ATR: 14, RSI: 14)
+- UseRSI: true (enables RSI filter for better entry timing)
 
 Trade Settings:
 - TP_ATR_Multiplier: 1.5
@@ -122,15 +125,29 @@ Scalping Settings:
 
 ### Indicator Fine-Tuning
 
+#### RSI Settings:
+- **RSI_Period**: 14 (default) - Standard RSI period
+  - Lower values (9-11): More sensitive, faster signals
+  - Higher values (18-21): More stable, fewer signals
+- **RSI_Overbought**: 70.0 (default)
+  - Lower values (60-65): More conservative, fewer sell signals
+  - Higher values (75-80): More aggressive selling
+- **RSI_Oversold**: 30.0 (default)
+  - Higher values (35-40): More conservative, fewer buy signals
+  - Lower values (20-25): More aggressive buying
+- **UseRSI**: true (default) - Set to false to disable RSI filter
+
 #### For Faster Signals:
 - MACD_Fast: 8
 - MACD_Slow: 17
 - BB_Period: 15
+- RSI_Period: 9
 
 #### For Slower, More Reliable Signals:
 - MACD_Fast: 16
 - MACD_Slow: 32
 - BB_Period: 25
+- RSI_Period: 21
 
 ## GUI Panel Guide
 
@@ -147,8 +164,9 @@ Scalping Settings:
 │ Spread: 25.0                    │
 │ Session: Open/Closed            │
 │ ATR: 8.50                       │
-│ MACD: Bullish/Bearish          │
-│ Signal: BUY/SELL/None          │
+│ MACD: Bullish/Bearish           │
+│ RSI: 45.0 (Neutral)             │
+│ Signal: BUY/SELL/None           │
 │ [Error messages]                │
 └─────────────────────────────────┘
 ```
@@ -170,6 +188,11 @@ Scalping Settings:
 **MACD Indicator:**
 - 🟢 Bullish: MACD above signal line
 - 🔴 Bearish: MACD below signal line
+
+**RSI Indicator:**
+- 🟢 Oversold: RSI below 30 (buy opportunity)
+- 🔴 Overbought: RSI above 70 (sell opportunity)
+- ⚪ Neutral: RSI between 30-70 (no extreme condition)
 
 **Signal:**
 - 🟢 BUY: Buy conditions met
