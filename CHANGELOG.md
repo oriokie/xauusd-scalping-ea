@@ -5,6 +5,32 @@ All notable changes to the XAUUSD Scalping EA will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-01-01
+
+### Fixed
+- **Stop-Loss Calculation:** Added minimum stop-loss distance validation to prevent overly tight stops during low volatility periods
+  - New parameter `MinStopLossPoints` (default: 30 points) ensures SL is never too close to entry
+  - Prevents premature stop-outs when ATR is unusually low
+- **Risk-Reward Ratio:** Automatically adjusts TP to maintain minimum 1.5:1 reward/risk ratio
+  - Ensures profitable trades have adequate profit potential relative to risk
+- **Mean Reversion Exit Logic:** Improved exit conditions to prevent premature position closures
+  - Changed threshold from 0.2 to 0.3 ATR for more room
+  - Now only exits when price crosses beyond middle BB, not just approaches it
+  - Requires 1.5x MinProfitPoints before considering mean reversion exits
+- **Trailing Stop Logic:** Enhanced with minimum distance validation
+  - Applies same minimum distance rules as initial stop-loss
+  - Prevents trailing stop from being placed too close to current price
+  - Added detailed logging for trailing stop adjustments
+
+### Added
+- Enhanced logging for trade execution showing entry price, SL, TP, and distances in points
+- Position management logging with detailed exit information
+- Warning messages when ATR-based calculations are adjusted to meet minimum requirements
+
+### Changed
+- Mean reversion exit now more conservative to allow trades more time to develop
+- Trailing stop movements now logged with point distances for better debugging
+
 ## [1.0.0] - 2024-01-01
 
 ### Added

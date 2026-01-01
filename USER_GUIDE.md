@@ -88,6 +88,7 @@ Indicator Settings:
 Trade Settings:
 - TP_ATR_Multiplier: 1.5
 - SL_ATR_Multiplier: 1.0
+- MinStopLossPoints: 30 (prevents too-tight stops)
 - UseTrailingStop: true
 - TrailingStopATR: 1.0
 
@@ -113,6 +114,7 @@ Scalping Settings:
 #### More Conservative Approach:
 - RiskPercentage: 0.5%
 - SL_ATR_Multiplier: 1.5 (wider stops)
+- MinStopLossPoints: 40 (larger minimum)
 - TP_ATR_Multiplier: 2.0 (larger targets)
 - MaxPositions: 1
 - MinProfitPoints: 30
