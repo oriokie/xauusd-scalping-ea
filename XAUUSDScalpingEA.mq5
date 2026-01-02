@@ -24,6 +24,7 @@ input double AdaptiveRiskHighWinRate = 0.6;  // Win rate threshold for risk incr
 input double AdaptiveRiskLowWinRate = 0.4;   // Win rate threshold for risk decrease
 input double AdaptiveRiskIncreaseMultiplier = 1.2; // Risk multiplier for high win rate
 input double AdaptiveRiskDecreaseMultiplier = 0.7; // Risk multiplier for low win rate
+input double AdaptiveRiskMaxMultiplier = 1.5; // Maximum risk multiplier cap
 
 //--- Indicator Settings
 input group "=== Indicator Settings ==="
@@ -432,8 +433,8 @@ double CalculateLotSize(double stopLossPoints)
         }
         
         // Cap maximum adjusted risk
-        if(riskPercent > RiskPercentage * 1.5)
-            riskPercent = RiskPercentage * 1.5;
+        if(riskPercent > RiskPercentage * AdaptiveRiskMaxMultiplier)
+            riskPercent = RiskPercentage * AdaptiveRiskMaxMultiplier;
     }
     
     double riskAmount = balance * (riskPercent / 100.0);
