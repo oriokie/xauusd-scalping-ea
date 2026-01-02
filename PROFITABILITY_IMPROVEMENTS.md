@@ -233,4 +233,4 @@ The result should be **fewer trades but higher win rate**, leading to improved p
 ---
 
 **Last Updated**: 2026-01-03  
-**EA Version**: 1.00 (with profitability improvements)
+**EA Version**: 1.2.0 (with profitability improvements)

@@ -423,6 +423,19 @@ bool DetectLiquiditySweep(bool bullish)
 }
 
 //+------------------------------------------------------------------+
+//| Calculate minimum stop loss distance considering spread          |
+//+------------------------------------------------------------------+
+double CalculateMinStopDistance(double spreadPoints, double point)
+{
+    double minSlDistance = MinStopLossPoints * point;
+    
+    // Add spread cushion to account for execution costs
+    double spreadAdjustedMin = (MinStopLossPoints + spreadPoints * 2) * point;
+    
+    return MathMax(minSlDistance, spreadAdjustedMin);
+}
+
+//+------------------------------------------------------------------+
 //| Calculate lot size based on risk percentage                      |
 //+------------------------------------------------------------------+
 double CalculateLotSize(double stopLossPoints)
@@ -490,16 +503,14 @@ void ExecuteBuyOrder()
     // Calculate SL and TP with minimum distance validation
     // Increase SL multiplier for more breathing room
     double slDistance = atr * SL_ATR_Multiplier;
-    double minSlDistance = MinStopLossPoints * point;
-    
-    // Add spread to minimum SL to account for execution costs
-    minSlDistance = MathMax(minSlDistance, (MinStopLossPoints + spreadPoints * 2) * point);
+    double minSlDistance = CalculateMinStopDistance(spreadPoints, point);
     
     // Ensure stop loss is not too tight
     if(slDistance < minSlDistance)
     {
         slDistance = minSlDistance;
-        Print("Warning: ATR-based SL too tight, using minimum SL distance: ", minSlDistance/point, " points");
+        Print("Warning: ATR-based SL too tight, using minimum SL distance: ", 
+              NormalizeDouble(minSlDistance/point, 1), " points");
     }
     
     double tpDistance = atr * TP_ATR_Multiplier;
@@ -557,16 +568,14 @@ void ExecuteSellOrder()
     // Calculate SL and TP with minimum distance validation
     // Increase SL multiplier for more breathing room
     double slDistance = atr * SL_ATR_Multiplier;
-    double minSlDistance = MinStopLossPoints * point;
-    
-    // Add spread to minimum SL to account for execution costs
-    minSlDistance = MathMax(minSlDistance, (MinStopLossPoints + spreadPoints * 2) * point);
+    double minSlDistance = CalculateMinStopDistance(spreadPoints, point);
     
     // Ensure stop loss is not too tight
     if(slDistance < minSlDistance)
     {
         slDistance = minSlDistance;
-        Print("Warning: ATR-based SL too tight, using minimum SL distance: ", minSlDistance/point, " points");
+        Print("Warning: ATR-based SL too tight, using minimum SL distance: ", 
+              NormalizeDouble(minSlDistance/point, 1), " points");
     }
     
     double tpDistance = atr * TP_ATR_Multiplier;
