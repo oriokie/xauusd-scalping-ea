@@ -1,0 +1,1201 @@
+//+------------------------------------------------------------------+
+//|                                              SimbaSniperEA.mq5    |
+//|                           Multi-Timeframe Institutional Strategy  |
+//|                                                                  |
+//+------------------------------------------------------------------+
+#property copyright "Simba Sniper EA"
+#property link      ""
+#property version   "1.00"
+#property strict
+#property description "Institutional-grade multi-timeframe analysis EA"
+#property description "H4 Trend -> H1 Zones -> M5 Entry -> Optional M1 Precision"
+
+#include <Trade\Trade.mqh>
+#include <Trade\PositionInfo.mqh>
+#include <Trade\AccountInfo.mqh>
+
+//+------------------------------------------------------------------+
+//| Input Parameters                                                 |
+//+------------------------------------------------------------------+
+
+//--- Multi-Timeframe Settings
+input group "=== Multi-Timeframe Analysis ==="
+input ENUM_TIMEFRAMES H4_Timeframe = PERIOD_H4;    // H4: Trend Bias Timeframe
+input ENUM_TIMEFRAMES H1_Timeframe = PERIOD_H1;    // H1: HTF Zones Timeframe
+input ENUM_TIMEFRAMES M5_Timeframe = PERIOD_M5;    // M5: Entry Confirmation Timeframe
+input ENUM_TIMEFRAMES M1_Timeframe = PERIOD_M1;    // M1: Precision Entry Timeframe (Optional)
+input bool UseM1Precision = false;                 // Use M1 for precision entries
+
+//--- Risk Management
+input group "=== Risk Management ==="
+input double RiskPercentage = 1.0;                 // Risk per trade (%)
+input double MaxDailyLossPercent = 3.0;            // Maximum daily loss (%)
+input double MinRiskRewardRatio = 2.0;             // Minimum Risk/Reward Ratio
+input int MaxPositions = 1;                        // Maximum concurrent positions
+
+//--- ATR Settings
+input group "=== ATR Settings ==="
+input int ATR_Period = 14;                         // ATR Period
+input double ATR_ZoneMultiplier = 1.5;             // ATR multiplier for zone validation
+input double ATR_StopLossMultiplier = 1.5;         // Stop Loss ATR Multiplier
+input double ATR_TakeProfitMultiplier = 3.0;       // Take Profit ATR Multiplier
+
+//--- Structure Detection Settings
+input group "=== Structure Detection ==="
+input int SwingLookback = 20;                      // Bars to lookback for swing points
+input double MinDisplacementPercent = 0.3;         // Minimum displacement (% of ATR)
+input int OrderBlockBars = 5;                      // Bars to analyze for Order Blocks
+input int FVG_MinGapPoints = 20;                   // Minimum FVG gap in points
+
+//--- Entry Validation (9-Point System)
+input group "=== 9-Point Entry Validation ==="
+input bool Require_H4_Trend = true;                // 1. H4 Trend Alignment
+input bool Require_H1_Zone = true;                 // 2. H1 Zone Present
+input bool Require_BOS = true;                     // 3. Break of Structure
+input bool Require_LiquiditySweep = false;         // 4. Liquidity Sweep (Optional)
+input bool Require_FVG = false;                    // 5. Fair Value Gap (Optional)
+input bool Require_OrderBlock = true;              // 6. Order Block Confirmation
+input bool Require_ATR_Zone = true;                // 7. ATR Zone Validation
+input bool Require_ValidRR = true;                 // 8. Valid Risk/Reward
+input bool Require_SessionFilter = true;           // 9. Trading Session Active
+input int MinValidationPoints = 6;                 // Minimum validation points required (out of 9)
+
+//--- Trading Sessions
+input group "=== Trading Sessions ==="
+input bool TradeLondonSession = true;              // Trade London Session
+input bool TradeNewYorkSession = true;             // Trade New York Session
+input int LondonStartHour = 8;                     // London Start Hour (GMT)
+input int LondonEndHour = 17;                      // London End Hour (GMT)
+input int NewYorkStartHour = 13;                   // New York Start Hour (GMT)
+input int NewYorkEndHour = 22;                     // New York End Hour (GMT)
+input int SessionGMTOffset = 0;                    // Broker GMT Offset
+
+//--- Dashboard Settings
+input group "=== Dashboard Settings ==="
+input bool ShowDashboard = true;                   // Show Dashboard
+input int DashboardX = 20;                         // Dashboard X Position
+input int DashboardY = 50;                         // Dashboard Y Position
+input color DashboardBGColor = clrDarkSlateGray;   // Dashboard Background
+input color DashboardTextColor = clrWhite;         // Dashboard Text Color
+
+//+------------------------------------------------------------------+
+//| Global Variables                                                 |
+//+------------------------------------------------------------------+
+
+CTrade trade;
+CPositionInfo positionInfo;
+CAccountInfo accountInfo;
+
+// ATR Handles for each timeframe
+int atrH4Handle, atrH1Handle, atrM5Handle, atrM1Handle;
+double atrH4[], atrH1[], atrM5[], atrM1[];
+
+// Market Structure Variables
+enum TREND_DIRECTION { TREND_BULLISH, TREND_BEARISH, TREND_NEUTRAL };
+TREND_DIRECTION h4Trend = TREND_NEUTRAL;
+
+struct SwingPoint {
+    datetime time;
+    double price;
+    bool isHigh;
+};
+
+SwingPoint h4Swings[];
+SwingPoint h1Swings[];
+
+struct OrderBlock {
+    datetime time;
+    double high;
+    double low;
+    bool isBullish;
+    bool isValid;
+};
+
+OrderBlock h1OrderBlocks[];
+
+struct FairValueGap {
+    datetime time;
+    double upperBound;
+    double lowerBound;
+    bool isBullish;
+    bool isFilled;
+};
+
+FairValueGap h1FVGs[];
+
+struct SupportResistanceZone {
+    double level;
+    int touches;
+    bool isSupport;
+    double strength;
+};
+
+SupportResistanceZone h1Zones[];
+
+// Daily Statistics
+datetime dailyStartTime;
+double dailyStartBalance;
+int dailyTrades = 0;
+int dailyWins = 0;
+int dailyLosses = 0;
+bool tradingPaused = false;
+
+// Entry Validation Tracking
+struct EntryValidation {
+    bool h4TrendValid;
+    bool h1ZoneValid;
+    bool bosDetected;
+    bool liquiditySweep;
+    bool fvgPresent;
+    bool orderBlockValid;
+    bool atrZoneValid;
+    bool validRiskReward;
+    bool sessionActive;
+    int totalPoints;
+};
+
+EntryValidation currentValidation;
+
+datetime lastBarTime;
+string lastErrorMsg = "";
+
+//+------------------------------------------------------------------+
+//| Expert initialization function                                   |
+//+------------------------------------------------------------------+
+int OnInit()
+{
+    // Initialize ATR indicators for each timeframe
+    atrH4Handle = iATR(_Symbol, H4_Timeframe, ATR_Period);
+    atrH1Handle = iATR(_Symbol, H1_Timeframe, ATR_Period);
+    atrM5Handle = iATR(_Symbol, M5_Timeframe, ATR_Period);
+    
+    if(UseM1Precision)
+        atrM1Handle = iATR(_Symbol, M1_Timeframe, ATR_Period);
+    
+    if(atrH4Handle == INVALID_HANDLE || atrH1Handle == INVALID_HANDLE || 
+       atrM5Handle == INVALID_HANDLE)
+    {
+        Print("Error creating ATR indicators");
+        return(INIT_FAILED);
+    }
+    
+    // Set arrays as series
+    ArraySetAsSeries(atrH4, true);
+    ArraySetAsSeries(atrH1, true);
+    ArraySetAsSeries(atrM5, true);
+    if(UseM1Precision) ArraySetAsSeries(atrM1, true);
+    
+    // Initialize arrays
+    ArrayResize(h4Swings, 0);
+    ArrayResize(h1Swings, 0);
+    ArrayResize(h1OrderBlocks, 0);
+    ArrayResize(h1FVGs, 0);
+    ArrayResize(h1Zones, 0);
+    
+    // Initialize daily tracking
+    dailyStartTime = TimeCurrent();
+    dailyStartBalance = accountInfo.Balance();
+    
+    // Create dashboard
+    if(ShowDashboard)
+        CreateDashboard();
+    
+    Print("Simba Sniper EA initialized successfully");
+    Print("Multi-Timeframe Analysis: H4->H1->M5", UseM1Precision ? "->M1" : "");
+    
+    return(INIT_SUCCEEDED);
+}
+
+//+------------------------------------------------------------------+
+//| Expert deinitialization function                                 |
+//+------------------------------------------------------------------+
+void OnDeinit(const int reason)
+{
+    // Release indicators
+    IndicatorRelease(atrH4Handle);
+    IndicatorRelease(atrH1Handle);
+    IndicatorRelease(atrM5Handle);
+    if(UseM1Precision) IndicatorRelease(atrM1Handle);
+    
+    // Remove dashboard
+    DeleteDashboard();
+    
+    Print("Simba Sniper EA deinitialized");
+}
+
+//+------------------------------------------------------------------+
+//| Expert tick function                                             |
+//+------------------------------------------------------------------+
+void OnTick()
+{
+    // Check for new day
+    CheckNewDay();
+    
+    // Update ATR buffers
+    if(!UpdateATRBuffers())
+        return;
+    
+    // Check for new bar on M5
+    datetime currentBarTime = iTime(_Symbol, M5_Timeframe, 0);
+    bool isNewBar = (currentBarTime != lastBarTime);
+    
+    if(isNewBar)
+    {
+        lastBarTime = currentBarTime;
+        
+        // Update market structure analysis
+        AnalyzeH4Trend();
+        DetectH1Zones();
+        DetectH1OrderBlocks();
+        DetectH1FairValueGaps();
+        
+        // Check for entry opportunities
+        if(!tradingPaused && CountOpenPositions() < MaxPositions)
+        {
+            if(CheckDailyLossLimit())
+            {
+                int signal = AnalyzeEntryOpportunity();
+                
+                if(signal == 1) // Buy signal
+                    ExecuteBuyOrder();
+                else if(signal == -1) // Sell signal
+                    ExecuteSellOrder();
+            }
+            else
+            {
+                tradingPaused = true;
+                Print("Trading paused: Daily loss limit reached");
+            }
+        }
+    }
+    
+    // Manage open positions
+    ManageOpenPositions();
+    
+    // Update dashboard
+    if(ShowDashboard)
+        UpdateDashboard();
+}
+
+//+------------------------------------------------------------------+
+//| Update ATR buffers for all timeframes                            |
+//+------------------------------------------------------------------+
+bool UpdateATRBuffers()
+{
+    if(CopyBuffer(atrH4Handle, 0, 0, 3, atrH4) <= 0)
+    {
+        lastErrorMsg = "Failed to copy H4 ATR data";
+        return false;
+    }
+    
+    if(CopyBuffer(atrH1Handle, 0, 0, 3, atrH1) <= 0)
+    {
+        lastErrorMsg = "Failed to copy H1 ATR data";
+        return false;
+    }
+    
+    if(CopyBuffer(atrM5Handle, 0, 0, 3, atrM5) <= 0)
+    {
+        lastErrorMsg = "Failed to copy M5 ATR data";
+        return false;
+    }
+    
+    if(UseM1Precision && CopyBuffer(atrM1Handle, 0, 0, 3, atrM1) <= 0)
+    {
+        lastErrorMsg = "Failed to copy M1 ATR data";
+        return false;
+    }
+    
+    lastErrorMsg = "";
+    return true;
+}
+
+//+------------------------------------------------------------------+
+//| Analyze H4 trend bias (swing structure and displacement)         |
+//+------------------------------------------------------------------+
+void AnalyzeH4Trend()
+{
+    // Check if we have enough H4 bars
+    if(Bars(_Symbol, H4_Timeframe) < SwingLookback + 5)
+    {
+        h4Trend = TREND_NEUTRAL;
+        return;
+    }
+    
+    // Detect swing highs and lows on H4
+    ArrayResize(h4Swings, 0);
+    
+    for(int i = 2; i < SwingLookback; i++)
+    {
+        double high = iHigh(_Symbol, H4_Timeframe, i);
+        double low = iLow(_Symbol, H4_Timeframe, i);
+        double highPrev = iHigh(_Symbol, H4_Timeframe, i+1);
+        double lowPrev = iLow(_Symbol, H4_Timeframe, i+1);
+        double highNext = iHigh(_Symbol, H4_Timeframe, i-1);
+        double lowNext = iLow(_Symbol, H4_Timeframe, i-1);
+        
+        // Swing High detection
+        if(high > highPrev && high > highNext)
+        {
+            SwingPoint swing;
+            swing.time = iTime(_Symbol, H4_Timeframe, i);
+            swing.price = high;
+            swing.isHigh = true;
+            
+            int size = ArraySize(h4Swings);
+            ArrayResize(h4Swings, size + 1);
+            h4Swings[size] = swing;
+        }
+        
+        // Swing Low detection
+        if(low < lowPrev && low < lowNext)
+        {
+            SwingPoint swing;
+            swing.time = iTime(_Symbol, H4_Timeframe, i);
+            swing.price = low;
+            swing.isHigh = false;
+            
+            int size = ArraySize(h4Swings);
+            ArrayResize(h4Swings, size + 1);
+            h4Swings[size] = swing;
+        }
+    }
+    
+    // Determine trend from swing structure
+    if(ArraySize(h4Swings) >= 4)
+    {
+        // Check for higher highs and higher lows (bullish)
+        bool higherHighs = true;
+        bool higherLows = true;
+        bool lowerHighs = true;
+        bool lowerLows = true;
+        
+        for(int i = 0; i < ArraySize(h4Swings) - 1; i++)
+        {
+            if(h4Swings[i].isHigh && h4Swings[i+1].isHigh)
+            {
+                if(h4Swings[i].price <= h4Swings[i+1].price)
+                    higherHighs = false;
+                if(h4Swings[i].price >= h4Swings[i+1].price)
+                    lowerHighs = false;
+            }
+            else if(!h4Swings[i].isHigh && !h4Swings[i+1].isHigh)
+            {
+                if(h4Swings[i].price <= h4Swings[i+1].price)
+                    higherLows = false;
+                if(h4Swings[i].price >= h4Swings[i+1].price)
+                    lowerLows = false;
+            }
+        }
+        
+        if(higherHighs && higherLows)
+            h4Trend = TREND_BULLISH;
+        else if(lowerHighs && lowerLows)
+            h4Trend = TREND_BEARISH;
+        else
+            h4Trend = TREND_NEUTRAL;
+    }
+    
+    // Check for displacement (strong directional move)
+    double displacement = MathAbs(iClose(_Symbol, H4_Timeframe, 0) - iClose(_Symbol, H4_Timeframe, 3));
+    double minDisplacement = atrH4[0] * MinDisplacementPercent;
+    
+    if(displacement < minDisplacement)
+    {
+        // Not enough displacement, trend may be weak
+        if(h4Trend != TREND_NEUTRAL)
+        {
+            // Still keep trend but note weak displacement
+            lastErrorMsg = "H4 trend detected but weak displacement";
+        }
+    }
+}
+
+//+------------------------------------------------------------------+
+//| Detect H1 support/resistance zones                               |
+//+------------------------------------------------------------------+
+void DetectH1Zones()
+{
+    ArrayResize(h1Zones, 0);
+    
+    if(Bars(_Symbol, H1_Timeframe) < 100)
+        return;
+    
+    // Look for price levels with multiple touches
+    double priceStep = SymbolInfoDouble(_Symbol, SYMBOL_POINT) * 100; // 10 pips for XAUUSD
+    
+    // Analyze last 100 H1 bars
+    for(int i = 10; i < 100; i++)
+    {
+        double high = iHigh(_Symbol, H1_Timeframe, i);
+        double low = iLow(_Symbol, H1_Timeframe, i);
+        
+        // Check for support zone (multiple lows near this level)
+        int touchesSupport = 0;
+        for(int j = 0; j < 100; j++)
+        {
+            double testLow = iLow(_Symbol, H1_Timeframe, j);
+            if(MathAbs(testLow - low) < atrH1[0] * 0.3)
+                touchesSupport++;
+        }
+        
+        if(touchesSupport >= 3)
+        {
+            // Check if we already have a zone near this level
+            bool exists = false;
+            for(int z = 0; z < ArraySize(h1Zones); z++)
+            {
+                if(MathAbs(h1Zones[z].level - low) < atrH1[0] * 0.5)
+                {
+                    exists = true;
+                    break;
+                }
+            }
+            
+            if(!exists)
+            {
+                SupportResistanceZone zone;
+                zone.level = low;
+                zone.touches = touchesSupport;
+                zone.isSupport = true;
+                zone.strength = touchesSupport / 3.0;
+                
+                int size = ArraySize(h1Zones);
+                ArrayResize(h1Zones, size + 1);
+                h1Zones[size] = zone;
+            }
+        }
+        
+        // Check for resistance zone
+        int touchesResistance = 0;
+        for(int j = 0; j < 100; j++)
+        {
+            double testHigh = iHigh(_Symbol, H1_Timeframe, j);
+            if(MathAbs(testHigh - high) < atrH1[0] * 0.3)
+                touchesResistance++;
+        }
+        
+        if(touchesResistance >= 3)
+        {
+            bool exists = false;
+            for(int z = 0; z < ArraySize(h1Zones); z++)
+            {
+                if(MathAbs(h1Zones[z].level - high) < atrH1[0] * 0.5)
+                {
+                    exists = true;
+                    break;
+                }
+            }
+            
+            if(!exists)
+            {
+                SupportResistanceZone zone;
+                zone.level = high;
+                zone.touches = touchesResistance;
+                zone.isSupport = false;
+                zone.strength = touchesResistance / 3.0;
+                
+                int size = ArraySize(h1Zones);
+                ArrayResize(h1Zones, size + 1);
+                h1Zones[size] = zone;
+            }
+        }
+    }
+}
+
+//+------------------------------------------------------------------+
+//| Detect H1 Order Blocks                                           |
+//+------------------------------------------------------------------+
+void DetectH1OrderBlocks()
+{
+    // Clear old order blocks
+    ArrayResize(h1OrderBlocks, 0);
+    
+    if(Bars(_Symbol, H1_Timeframe) < OrderBlockBars + 5)
+        return;
+    
+    // Look for order blocks in recent bars
+    for(int i = 2; i < 20; i++)
+    {
+        double close1 = iClose(_Symbol, H1_Timeframe, i);
+        double open1 = iOpen(_Symbol, H1_Timeframe, i);
+        double high1 = iHigh(_Symbol, H1_Timeframe, i);
+        double low1 = iLow(_Symbol, H1_Timeframe, i);
+        
+        double close0 = iClose(_Symbol, H1_Timeframe, i-1);
+        double open0 = iOpen(_Symbol, H1_Timeframe, i-1);
+        
+        // Bullish Order Block: Down candle followed by strong up move
+        bool bullishOB = (close1 < open1) && (close0 > close1) && 
+                         (close0 - open0) > atrH1[0] * 0.5;
+        
+        // Bearish Order Block: Up candle followed by strong down move
+        bool bearishOB = (close1 > open1) && (close0 < close1) && 
+                         (open0 - close0) > atrH1[0] * 0.5;
+        
+        if(bullishOB || bearishOB)
+        {
+            OrderBlock ob;
+            ob.time = iTime(_Symbol, H1_Timeframe, i);
+            ob.high = high1;
+            ob.low = low1;
+            ob.isBullish = bullishOB;
+            ob.isValid = true;
+            
+            int size = ArraySize(h1OrderBlocks);
+            ArrayResize(h1OrderBlocks, size + 1);
+            h1OrderBlocks[size] = ob;
+        }
+    }
+}
+
+//+------------------------------------------------------------------+
+//| Detect H1 Fair Value Gaps                                        |
+//+------------------------------------------------------------------+
+void DetectH1FairValueGaps()
+{
+    // Clear old FVGs
+    ArrayResize(h1FVGs, 0);
+    
+    if(Bars(_Symbol, H1_Timeframe) < 10)
+        return;
+    
+    double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+    
+    // Look for FVGs in recent bars
+    for(int i = 2; i < 20; i++)
+    {
+        double high2 = iHigh(_Symbol, H1_Timeframe, i+1);
+        double low2 = iLow(_Symbol, H1_Timeframe, i+1);
+        double high1 = iHigh(_Symbol, H1_Timeframe, i);
+        double low1 = iLow(_Symbol, H1_Timeframe, i);
+        double high0 = iHigh(_Symbol, H1_Timeframe, i-1);
+        double low0 = iLow(_Symbol, H1_Timeframe, i-1);
+        
+        // Bullish FVG: Gap between bar[i+1].high and bar[i-1].low
+        double bullishGap = low0 - high2;
+        if(bullishGap > FVG_MinGapPoints * point)
+        {
+            FairValueGap fvg;
+            fvg.time = iTime(_Symbol, H1_Timeframe, i);
+            fvg.upperBound = low0;
+            fvg.lowerBound = high2;
+            fvg.isBullish = true;
+            fvg.isFilled = false;
+            
+            int size = ArraySize(h1FVGs);
+            ArrayResize(h1FVGs, size + 1);
+            h1FVGs[size] = fvg;
+        }
+        
+        // Bearish FVG: Gap between bar[i+1].low and bar[i-1].high
+        double bearishGap = low2 - high0;
+        if(bearishGap > FVG_MinGapPoints * point)
+        {
+            FairValueGap fvg;
+            fvg.time = iTime(_Symbol, H1_Timeframe, i);
+            fvg.upperBound = low2;
+            fvg.lowerBound = high0;
+            fvg.isBullish = false;
+            fvg.isFilled = false;
+            
+            int size = ArraySize(h1FVGs);
+            ArrayResize(h1FVGs, size + 1);
+            h1FVGs[size] = fvg;
+        }
+    }
+}
+
+//+------------------------------------------------------------------+
+//| Analyze entry opportunity with 9-point validation                |
+//+------------------------------------------------------------------+
+int AnalyzeEntryOpportunity()
+{
+    // Reset validation
+    ZeroMemory(currentValidation);
+    currentValidation.totalPoints = 0;
+    
+    // 1. H4 Trend Alignment
+    if(h4Trend == TREND_BULLISH || h4Trend == TREND_BEARISH)
+    {
+        currentValidation.h4TrendValid = true;
+        currentValidation.totalPoints++;
+    }
+    
+    // 2. H1 Zone Present
+    double currentPrice = (SymbolInfoDouble(_Symbol, SYMBOL_BID) + 
+                          SymbolInfoDouble(_Symbol, SYMBOL_ASK)) / 2.0;
+    
+    for(int i = 0; i < ArraySize(h1Zones); i++)
+    {
+        if(MathAbs(currentPrice - h1Zones[i].level) < atrH1[0] * ATR_ZoneMultiplier)
+        {
+            currentValidation.h1ZoneValid = true;
+            currentValidation.totalPoints++;
+            break;
+        }
+    }
+    
+    // 3. Break of Structure (BOS) on M5
+    currentValidation.bosDetected = DetectBreakOfStructure();
+    if(currentValidation.bosDetected)
+        currentValidation.totalPoints++;
+    
+    // 4. Liquidity Sweep (Optional)
+    currentValidation.liquiditySweep = DetectLiquiditySweep();
+    if(currentValidation.liquiditySweep)
+        currentValidation.totalPoints++;
+    
+    // 5. Fair Value Gap Present (Optional)
+    for(int i = 0; i < ArraySize(h1FVGs); i++)
+    {
+        if(!h1FVGs[i].isFilled)
+        {
+            if(currentPrice >= h1FVGs[i].lowerBound && 
+               currentPrice <= h1FVGs[i].upperBound)
+            {
+                currentValidation.fvgPresent = true;
+                currentValidation.totalPoints++;
+                break;
+            }
+        }
+    }
+    
+    // 6. Order Block Confirmation
+    for(int i = 0; i < ArraySize(h1OrderBlocks); i++)
+    {
+        if(h1OrderBlocks[i].isValid)
+        {
+            if(currentPrice >= h1OrderBlocks[i].low && 
+               currentPrice <= h1OrderBlocks[i].high)
+            {
+                currentValidation.orderBlockValid = true;
+                currentValidation.totalPoints++;
+                break;
+            }
+        }
+    }
+    
+    // 7. ATR Zone Validation
+    currentValidation.atrZoneValid = ValidateATRZone();
+    if(currentValidation.atrZoneValid)
+        currentValidation.totalPoints++;
+    
+    // 8. Valid Risk/Reward
+    currentValidation.validRiskReward = true; // Will be validated in order execution
+    currentValidation.totalPoints++;
+    
+    // 9. Session Filter
+    currentValidation.sessionActive = IsWithinTradingSession();
+    if(currentValidation.sessionActive)
+        currentValidation.totalPoints++;
+    
+    // Check if minimum validation points met
+    if(currentValidation.totalPoints < MinValidationPoints)
+        return 0; // No signal
+    
+    // Check required validations
+    if(Require_H4_Trend && !currentValidation.h4TrendValid)
+        return 0;
+    if(Require_H1_Zone && !currentValidation.h1ZoneValid)
+        return 0;
+    if(Require_BOS && !currentValidation.bosDetected)
+        return 0;
+    if(Require_LiquiditySweep && !currentValidation.liquiditySweep)
+        return 0;
+    if(Require_FVG && !currentValidation.fvgPresent)
+        return 0;
+    if(Require_OrderBlock && !currentValidation.orderBlockValid)
+        return 0;
+    if(Require_ATR_Zone && !currentValidation.atrZoneValid)
+        return 0;
+    if(Require_SessionFilter && !currentValidation.sessionActive)
+        return 0;
+    
+    // Determine direction based on H4 trend
+    if(h4Trend == TREND_BULLISH)
+        return 1; // Buy signal
+    else if(h4Trend == TREND_BEARISH)
+        return -1; // Sell signal
+    
+    return 0; // No signal
+}
+
+//+------------------------------------------------------------------+
+//| Detect Break of Structure on M5                                  |
+//+------------------------------------------------------------------+
+bool DetectBreakOfStructure()
+{
+    if(Bars(_Symbol, M5_Timeframe) < 10)
+        return false;
+    
+    // Get recent swing points on M5
+    double swingHigh = -1;
+    double swingLow = 999999;
+    
+    for(int i = 2; i < 10; i++)
+    {
+        double high = iHigh(_Symbol, M5_Timeframe, i);
+        double low = iLow(_Symbol, M5_Timeframe, i);
+        
+        if(high > swingHigh)
+            swingHigh = high;
+        if(low < swingLow)
+            swingLow = low;
+    }
+    
+    double currentClose = iClose(_Symbol, M5_Timeframe, 0);
+    
+    // Bullish BOS: Price breaks above recent swing high
+    bool bullishBOS = (currentClose > swingHigh) && (h4Trend == TREND_BULLISH);
+    
+    // Bearish BOS: Price breaks below recent swing low
+    bool bearishBOS = (currentClose < swingLow) && (h4Trend == TREND_BEARISH);
+    
+    return (bullishBOS || bearishBOS);
+}
+
+//+------------------------------------------------------------------+
+//| Detect liquidity sweep on M5                                     |
+//+------------------------------------------------------------------+
+bool DetectLiquiditySweep()
+{
+    if(Bars(_Symbol, M5_Timeframe) < 5)
+        return false;
+    
+    double high1 = iHigh(_Symbol, M5_Timeframe, 1);
+    double low1 = iLow(_Symbol, M5_Timeframe, 1);
+    double close1 = iClose(_Symbol, M5_Timeframe, 1);
+    double open1 = iOpen(_Symbol, M5_Timeframe, 1);
+    
+    double high2 = iHigh(_Symbol, M5_Timeframe, 2);
+    double low2 = iLow(_Symbol, M5_Timeframe, 2);
+    
+    // Bullish sweep: Breaks below previous low, then reverses up
+    bool bullishSweep = (low1 < low2) && (close1 > open1) && 
+                        (close1 - low1) > atrM5[0] * 0.3;
+    
+    // Bearish sweep: Breaks above previous high, then reverses down
+    bool bearishSweep = (high1 > high2) && (close1 < open1) && 
+                        (high1 - close1) > atrM5[0] * 0.3;
+    
+    return (bullishSweep || bearishSweep);
+}
+
+//+------------------------------------------------------------------+
+//| Validate ATR-implied zones                                       |
+//+------------------------------------------------------------------+
+bool ValidateATRZone()
+{
+    // Check if current price is within acceptable ATR distance from H1 zone
+    double currentPrice = (SymbolInfoDouble(_Symbol, SYMBOL_BID) + 
+                          SymbolInfoDouble(_Symbol, SYMBOL_ASK)) / 2.0;
+    
+    for(int i = 0; i < ArraySize(h1Zones); i++)
+    {
+        double distance = MathAbs(currentPrice - h1Zones[i].level);
+        if(distance <= atrH1[0] * ATR_ZoneMultiplier)
+            return true;
+    }
+    
+    return false;
+}
+
+//+------------------------------------------------------------------+
+//| Execute buy order                                                |
+//+------------------------------------------------------------------+
+void ExecuteBuyOrder()
+{
+    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+    double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+    
+    // Calculate SL and TP
+    double slDistance = atrM5[0] * ATR_StopLossMultiplier;
+    double tpDistance = atrM5[0] * ATR_TakeProfitMultiplier;
+    
+    // Ensure minimum RR ratio
+    if(tpDistance < slDistance * MinRiskRewardRatio)
+        tpDistance = slDistance * MinRiskRewardRatio;
+    
+    double sl = ask - slDistance;
+    double tp = ask + tpDistance;
+    
+    // Calculate lot size
+    double slPoints = slDistance / point;
+    double lotSize = CalculateLotSize(slPoints);
+    
+    if(lotSize < SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN))
+    {
+        lastErrorMsg = "Lot size too small";
+        return;
+    }
+    
+    // Execute trade
+    trade.SetDeviationInPoints(10);
+    
+    if(trade.Buy(lotSize, _Symbol, ask, sl, tp, "Simba Sniper Buy"))
+    {
+        dailyTrades++;
+        Print(StringFormat("BUY order executed at %.2f, SL: %.2f, TP: %.2f, Lot: %.2f, Validation: %d/9", 
+              ask, sl, tp, lotSize, currentValidation.totalPoints));
+    }
+    else
+    {
+        lastErrorMsg = "Failed to execute BUY order: " + IntegerToString(trade.ResultRetcode());
+        Print(lastErrorMsg);
+    }
+}
+
+//+------------------------------------------------------------------+
+//| Execute sell order                                               |
+//+------------------------------------------------------------------+
+void ExecuteSellOrder()
+{
+    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+    double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+    
+    // Calculate SL and TP
+    double slDistance = atrM5[0] * ATR_StopLossMultiplier;
+    double tpDistance = atrM5[0] * ATR_TakeProfitMultiplier;
+    
+    // Ensure minimum RR ratio
+    if(tpDistance < slDistance * MinRiskRewardRatio)
+        tpDistance = slDistance * MinRiskRewardRatio;
+    
+    double sl = bid + slDistance;
+    double tp = bid - tpDistance;
+    
+    // Calculate lot size
+    double slPoints = slDistance / point;
+    double lotSize = CalculateLotSize(slPoints);
+    
+    if(lotSize < SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN))
+    {
+        lastErrorMsg = "Lot size too small";
+        return;
+    }
+    
+    // Execute trade
+    trade.SetDeviationInPoints(10);
+    
+    if(trade.Sell(lotSize, _Symbol, bid, sl, tp, "Simba Sniper Sell"))
+    {
+        dailyTrades++;
+        Print(StringFormat("SELL order executed at %.2f, SL: %.2f, TP: %.2f, Lot: %.2f, Validation: %d/9", 
+              bid, sl, tp, lotSize, currentValidation.totalPoints));
+    }
+    else
+    {
+        lastErrorMsg = "Failed to execute SELL order: " + IntegerToString(trade.ResultRetcode());
+        Print(lastErrorMsg);
+    }
+}
+
+//+------------------------------------------------------------------+
+//| Calculate lot size based on risk percentage                      |
+//+------------------------------------------------------------------+
+double CalculateLotSize(double stopLossPoints)
+{
+    double balance = accountInfo.Balance();
+    double riskAmount = balance * (RiskPercentage / 100.0);
+    
+    double tickValue = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
+    double tickSize = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+    double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+    
+    if(tickSize == 0 || point == 0)
+        return 0.0;
+    
+    double moneyPerPoint = (tickValue / tickSize) * point;
+    double lotSize = riskAmount / (stopLossPoints * moneyPerPoint);
+    
+    // Normalize lot size
+    double minLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+    double maxLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);
+    double lotStep = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
+    
+    lotSize = MathFloor(lotSize / lotStep) * lotStep;
+    lotSize = MathMax(minLot, MathMin(maxLot, lotSize));
+    
+    return lotSize;
+}
+
+//+------------------------------------------------------------------+
+//| Manage open positions                                            |
+//+------------------------------------------------------------------+
+void ManageOpenPositions()
+{
+    // Simple position management - could be enhanced
+    for(int i = PositionsTotal() - 1; i >= 0; i--)
+    {
+        if(positionInfo.SelectByIndex(i))
+        {
+            if(positionInfo.Symbol() != _Symbol)
+                continue;
+            
+            // Add trailing stop or partial close logic here if needed
+        }
+    }
+}
+
+//+------------------------------------------------------------------+
+//| Count open positions                                             |
+//+------------------------------------------------------------------+
+int CountOpenPositions()
+{
+    int count = 0;
+    for(int i = 0; i < PositionsTotal(); i++)
+    {
+        if(positionInfo.SelectByIndex(i))
+        {
+            if(positionInfo.Symbol() == _Symbol)
+                count++;
+        }
+    }
+    return count;
+}
+
+//+------------------------------------------------------------------+
+//| Check if within trading session                                  |
+//+------------------------------------------------------------------+
+bool IsWithinTradingSession()
+{
+    datetime now = TimeCurrent();
+    MqlDateTime tm;
+    TimeToStruct(now, tm);
+    int currentHour = tm.hour;
+    
+    // Apply GMT offset
+    currentHour = ((currentHour + SessionGMTOffset) % 24 + 24) % 24;
+    
+    bool inLondon = false;
+    bool inNewYork = false;
+    
+    if(TradeLondonSession)
+        inLondon = (currentHour >= LondonStartHour && currentHour < LondonEndHour);
+    
+    if(TradeNewYorkSession)
+        inNewYork = (currentHour >= NewYorkStartHour && currentHour < NewYorkEndHour);
+    
+    return (inLondon || inNewYork);
+}
+
+//+------------------------------------------------------------------+
+//| Check daily loss limit                                           |
+//+------------------------------------------------------------------+
+bool CheckDailyLossLimit()
+{
+    double currentBalance = accountInfo.Balance();
+    double dailyPL = currentBalance - dailyStartBalance;
+    double maxLoss = dailyStartBalance * (MaxDailyLossPercent / 100.0);
+    
+    return (dailyPL >= -maxLoss);
+}
+
+//+------------------------------------------------------------------+
+//| Check for new day and reset counters                             |
+//+------------------------------------------------------------------+
+void CheckNewDay()
+{
+    MqlDateTime currentTime, startTime;
+    TimeToStruct(TimeCurrent(), currentTime);
+    TimeToStruct(dailyStartTime, startTime);
+    
+    if(currentTime.day != startTime.day)
+    {
+        // Reset for new day
+        dailyStartTime = TimeCurrent();
+        dailyStartBalance = accountInfo.Balance();
+        dailyTrades = 0;
+        dailyWins = 0;
+        dailyLosses = 0;
+        tradingPaused = false;
+        
+        Print("New trading day started");
+    }
+}
+
+//+------------------------------------------------------------------+
+//| Create dashboard                                                 |
+//+------------------------------------------------------------------+
+void CreateDashboard()
+{
+    string prefix = "SimbaSniper_";
+    
+    // Background
+    ObjectCreate(0, prefix + "BG", OBJ_RECTANGLE_LABEL, 0, 0, 0);
+    ObjectSetInteger(0, prefix + "BG", OBJPROP_XDISTANCE, DashboardX);
+    ObjectSetInteger(0, prefix + "BG", OBJPROP_YDISTANCE, DashboardY);
+    ObjectSetInteger(0, prefix + "BG", OBJPROP_XSIZE, 350);
+    ObjectSetInteger(0, prefix + "BG", OBJPROP_YSIZE, 500);
+    ObjectSetInteger(0, prefix + "BG", OBJPROP_BGCOLOR, DashboardBGColor);
+    ObjectSetInteger(0, prefix + "BG", OBJPROP_BORDER_TYPE, BORDER_FLAT);
+    ObjectSetInteger(0, prefix + "BG", OBJPROP_CORNER, CORNER_LEFT_UPPER);
+    
+    // Create labels
+    CreateLabel(prefix + "Title", "SIMBA SNIPER EA", DashboardX + 10, DashboardY + 10, 11, clrGold);
+    CreateLabel(prefix + "Strategy", "Multi-Timeframe Institutional", DashboardX + 10, DashboardY + 35, 8, clrSilver);
+    CreateLabel(prefix + "H4Trend", "H4 Trend: Analyzing...", DashboardX + 10, DashboardY + 60, 9, DashboardTextColor);
+    CreateLabel(prefix + "H1Zones", "H1 Zones: 0", DashboardX + 10, DashboardY + 85, 9, DashboardTextColor);
+    CreateLabel(prefix + "OrderBlocks", "Order Blocks: 0", DashboardX + 10, DashboardY + 110, 9, DashboardTextColor);
+    CreateLabel(prefix + "FVGs", "Fair Value Gaps: 0", DashboardX + 10, DashboardY + 135, 9, DashboardTextColor);
+    CreateLabel(prefix + "Validation", "Entry Validation: 0/9", DashboardX + 10, DashboardY + 160, 9, DashboardTextColor);
+    CreateLabel(prefix + "Points", "Points Met: None", DashboardX + 10, DashboardY + 185, 8, clrYellow);
+    CreateLabel(prefix + "Session", "Session: Closed", DashboardX + 10, DashboardY + 210, 9, DashboardTextColor);
+    CreateLabel(prefix + "Balance", "Balance: 0.00", DashboardX + 10, DashboardY + 240, 9, DashboardTextColor);
+    CreateLabel(prefix + "DailyPL", "Daily P/L: 0.00", DashboardX + 10, DashboardY + 265, 9, DashboardTextColor);
+    CreateLabel(prefix + "Trades", "Trades: 0", DashboardX + 10, DashboardY + 290, 9, DashboardTextColor);
+    CreateLabel(prefix + "Positions", "Open Positions: 0", DashboardX + 10, DashboardY + 315, 9, DashboardTextColor);
+    CreateLabel(prefix + "ATRH4", "ATR H4: 0.00", DashboardX + 10, DashboardY + 345, 8, DashboardTextColor);
+    CreateLabel(prefix + "ATRH1", "ATR H1: 0.00", DashboardX + 10, DashboardY + 370, 8, DashboardTextColor);
+    CreateLabel(prefix + "ATRM5", "ATR M5: 0.00", DashboardX + 10, DashboardY + 395, 8, DashboardTextColor);
+    CreateLabel(prefix + "Status", "Status: Active", DashboardX + 10, DashboardY + 420, 9, clrLime);
+    CreateLabel(prefix + "Error", "", DashboardX + 10, DashboardY + 445, 7, clrRed);
+}
+
+//+------------------------------------------------------------------+
+//| Create label helper                                              |
+//+------------------------------------------------------------------+
+void CreateLabel(string name, string text, int x, int y, int fontSize, color clr)
+{
+    ObjectCreate(0, name, OBJ_LABEL, 0, 0, 0);
+    ObjectSetInteger(0, name, OBJPROP_XDISTANCE, x);
+    ObjectSetInteger(0, name, OBJPROP_YDISTANCE, y);
+    ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
+    ObjectSetInteger(0, name, OBJPROP_FONTSIZE, fontSize);
+    ObjectSetInteger(0, name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+    ObjectSetString(0, name, OBJPROP_TEXT, text);
+}
+
+//+------------------------------------------------------------------+
+//| Update dashboard                                                 |
+//+------------------------------------------------------------------+
+void UpdateDashboard()
+{
+    string prefix = "SimbaSniper_";
+    
+    // H4 Trend
+    string trendText = "H4 Trend: ";
+    color trendColor = DashboardTextColor;
+    
+    if(h4Trend == TREND_BULLISH)
+    {
+        trendText += "BULLISH";
+        trendColor = clrLime;
+    }
+    else if(h4Trend == TREND_BEARISH)
+    {
+        trendText += "BEARISH";
+        trendColor = clrRed;
+    }
+    else
+    {
+        trendText += "NEUTRAL";
+        trendColor = clrYellow;
+    }
+    
+    ObjectSetString(0, prefix + "H4Trend", OBJPROP_TEXT, trendText);
+    ObjectSetInteger(0, prefix + "H4Trend", OBJPROP_COLOR, trendColor);
+    
+    // H1 Zones
+    ObjectSetString(0, prefix + "H1Zones", OBJPROP_TEXT, 
+                    StringFormat("H1 Zones: %d", ArraySize(h1Zones)));
+    
+    // Order Blocks
+    ObjectSetString(0, prefix + "OrderBlocks", OBJPROP_TEXT, 
+                    StringFormat("Order Blocks: %d", ArraySize(h1OrderBlocks)));
+    
+    // FVGs
+    ObjectSetString(0, prefix + "FVGs", OBJPROP_TEXT, 
+                    StringFormat("Fair Value Gaps: %d", ArraySize(h1FVGs)));
+    
+    // Validation
+    ObjectSetString(0, prefix + "Validation", OBJPROP_TEXT, 
+                    StringFormat("Entry Validation: %d/9", currentValidation.totalPoints));
+    
+    // Validation Points Details
+    string pointsText = "Points: ";
+    if(currentValidation.h4TrendValid) pointsText += "H4 ";
+    if(currentValidation.h1ZoneValid) pointsText += "Zone ";
+    if(currentValidation.bosDetected) pointsText += "BOS ";
+    if(currentValidation.liquiditySweep) pointsText += "Sweep ";
+    if(currentValidation.fvgPresent) pointsText += "FVG ";
+    if(currentValidation.orderBlockValid) pointsText += "OB ";
+    if(currentValidation.atrZoneValid) pointsText += "ATR ";
+    if(currentValidation.sessionActive) pointsText += "Session";
+    
+    if(currentValidation.totalPoints == 0) pointsText = "Points: None";
+    
+    ObjectSetString(0, prefix + "Points", OBJPROP_TEXT, pointsText);
+    
+    // Session
+    string sessionText = IsWithinTradingSession() ? "Session: ACTIVE" : "Session: CLOSED";
+    color sessionColor = IsWithinTradingSession() ? clrLime : clrOrange;
+    ObjectSetString(0, prefix + "Session", OBJPROP_TEXT, sessionText);
+    ObjectSetInteger(0, prefix + "Session", OBJPROP_COLOR, sessionColor);
+    
+    // Balance
+    ObjectSetString(0, prefix + "Balance", OBJPROP_TEXT, 
+                    StringFormat("Balance: %.2f", accountInfo.Balance()));
+    
+    // Daily P/L
+    double dailyPL = accountInfo.Balance() - dailyStartBalance;
+    color plColor = dailyPL >= 0 ? clrLime : clrRed;
+    ObjectSetString(0, prefix + "DailyPL", OBJPROP_TEXT, 
+                    StringFormat("Daily P/L: %.2f", dailyPL));
+    ObjectSetInteger(0, prefix + "DailyPL", OBJPROP_COLOR, plColor);
+    
+    // Trades
+    ObjectSetString(0, prefix + "Trades", OBJPROP_TEXT, 
+                    StringFormat("Trades: %d", dailyTrades));
+    
+    // Open Positions
+    ObjectSetString(0, prefix + "Positions", OBJPROP_TEXT, 
+                    StringFormat("Open Positions: %d", CountOpenPositions()));
+    
+    // ATR values
+    ObjectSetString(0, prefix + "ATRH4", OBJPROP_TEXT, 
+                    StringFormat("ATR H4: %.2f", atrH4[0]));
+    ObjectSetString(0, prefix + "ATRH1", OBJPROP_TEXT, 
+                    StringFormat("ATR H1: %.2f", atrH1[0]));
+    ObjectSetString(0, prefix + "ATRM5", OBJPROP_TEXT, 
+                    StringFormat("ATR M5: %.2f", atrM5[0]));
+    
+    // Status
+    string statusText = tradingPaused ? "Status: PAUSED" : "Status: ACTIVE";
+    color statusColor = tradingPaused ? clrRed : clrLime;
+    ObjectSetString(0, prefix + "Status", OBJPROP_TEXT, statusText);
+    ObjectSetInteger(0, prefix + "Status", OBJPROP_COLOR, statusColor);
+    
+    // Error
+    ObjectSetString(0, prefix + "Error", OBJPROP_TEXT, lastErrorMsg);
+}
+
+//+------------------------------------------------------------------+
+//| Delete dashboard                                                 |
+//+------------------------------------------------------------------+
+void DeleteDashboard()
+{
+    string prefix = "SimbaSniper_";
+    
+    ObjectDelete(0, prefix + "BG");
+    ObjectDelete(0, prefix + "Title");
+    ObjectDelete(0, prefix + "Strategy");
+    ObjectDelete(0, prefix + "H4Trend");
+    ObjectDelete(0, prefix + "H1Zones");
+    ObjectDelete(0, prefix + "OrderBlocks");
+    ObjectDelete(0, prefix + "FVGs");
+    ObjectDelete(0, prefix + "Validation");
+    ObjectDelete(0, prefix + "Points");
+    ObjectDelete(0, prefix + "Session");
+    ObjectDelete(0, prefix + "Balance");
+    ObjectDelete(0, prefix + "DailyPL");
+    ObjectDelete(0, prefix + "Trades");
+    ObjectDelete(0, prefix + "Positions");
+    ObjectDelete(0, prefix + "ATRH4");
+    ObjectDelete(0, prefix + "ATRH1");
+    ObjectDelete(0, prefix + "ATRM5");
+    ObjectDelete(0, prefix + "Status");
+    ObjectDelete(0, prefix + "Error");
+}
+//+------------------------------------------------------------------+
