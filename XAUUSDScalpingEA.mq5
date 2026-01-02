@@ -306,6 +306,14 @@ int GetEntrySignal()
     // Higher timeframe trend confirmation
     double htfClose0 = iClose(_Symbol, HigherTF, 0);
     double htfClose1 = iClose(_Symbol, HigherTF, 1);
+    
+    // Validate HTF data availability
+    if(htfClose0 <= 0 || htfClose1 <= 0)
+    {
+        // HTF data not available yet, skip trading
+        return 0;
+    }
+    
     bool htfBullish = (htfClose0 > htfClose1);
     bool htfBearish = (htfClose0 < htfClose1);
     
@@ -402,6 +410,7 @@ double CalculateLotSize(double stopLossPoints)
     // Adaptive risk based on win rate (requires minimum sample size)
     if(UseAdaptiveRisk && dailyTrades >= AdaptiveRiskMinTrades)
     {
+        // Calculate win rate (safe: dailyTrades >= AdaptiveRiskMinTrades > 0)
         double winRate = (double)dailyWins / dailyTrades;
         
         // Increase risk if win rate is high, decrease if low
@@ -796,7 +805,7 @@ bool CheckVolume()
         return false;
     }
     
-    // Get current volume from last completed bar (index 1) for consistency
+    // Get volume from last completed bar (index 1, not current incomplete bar at index 0)
     long currentVolume = iVolume(_Symbol, PERIOD_CURRENT, 1);
     
     // Check for error in volume retrieval
@@ -829,6 +838,7 @@ bool CheckVolume()
         return false;
     }
     
+    // Calculate average (safe: validBars > 0)
     double averageVolume = (double)totalVolume / validBars;
     
     // Check if current volume meets minimum threshold
