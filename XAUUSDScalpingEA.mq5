@@ -19,6 +19,11 @@ input double RiskPercentage = 1.0;           // Risk per trade (%)
 input double MaxDailyLossPercent = 5.0;      // Maximum daily loss (%)
 input double MaxSpreadPoints = 50;           // Maximum spread in points
 input bool UseAdaptiveRisk = true;           // Use adaptive risk based on win rate
+input int AdaptiveRiskMinTrades = 5;         // Minimum trades for adaptive risk
+input double AdaptiveRiskHighWinRate = 0.6;  // Win rate threshold for risk increase
+input double AdaptiveRiskLowWinRate = 0.4;   // Win rate threshold for risk decrease
+input double AdaptiveRiskIncreaseMultiplier = 1.2; // Risk multiplier for high win rate
+input double AdaptiveRiskDecreaseMultiplier = 0.7; // Risk multiplier for low win rate
 
 //--- Indicator Settings
 input group "=== Indicator Settings ==="
@@ -31,6 +36,8 @@ input int ATR_Period = 14;                   // ATR Period for volatility
 input int RSI_Period = 14;                   // RSI Period for momentum
 input double RSI_Oversold = 30.0;            // RSI Oversold Level
 input double RSI_Overbought = 70.0;          // RSI Overbought Level
+input double RSI_MomentumUpper = 60.0;       // RSI upper threshold for momentum building
+input double RSI_MomentumLower = 40.0;       // RSI lower threshold for momentum building
 
 //--- Take Profit and Stop Loss
 input group "=== Trade Settings ==="
@@ -313,8 +320,8 @@ int GetEntrySignal()
     // RSI momentum conditions - for better entries
     bool rsiOversold = (rsiBuffer[0] < RSI_Oversold);
     bool rsiOverbought = (rsiBuffer[0] > RSI_Overbought);
-    bool rsiBullishMomentum = (rsiBuffer[0] > rsiBuffer[1]) && (rsiBuffer[0] < 60); // Building momentum
-    bool rsiBearishMomentum = (rsiBuffer[0] < rsiBuffer[1]) && (rsiBuffer[0] > 40); // Building momentum
+    bool rsiBullishMomentum = (rsiBuffer[0] > rsiBuffer[1]) && (rsiBuffer[0] < RSI_MomentumUpper);
+    bool rsiBearishMomentum = (rsiBuffer[0] < rsiBuffer[1]) && (rsiBuffer[0] > RSI_MomentumLower);
     
     // Bollinger Bands conditions
     bool priceBelowLowerBB = currentPrice < bbLower[0];
@@ -393,18 +400,18 @@ double CalculateLotSize(double stopLossPoints)
     double riskPercent = RiskPercentage;
     
     // Adaptive risk based on win rate (requires minimum sample size)
-    if(UseAdaptiveRisk && dailyTrades >= 5)
+    if(UseAdaptiveRisk && dailyTrades >= AdaptiveRiskMinTrades)
     {
         double winRate = (double)dailyWins / dailyTrades;
         
         // Increase risk if win rate is high, decrease if low
-        if(winRate >= 0.6)
+        if(winRate >= AdaptiveRiskHighWinRate)
         {
-            riskPercent = RiskPercentage * 1.2; // Increase by 20%
+            riskPercent = RiskPercentage * AdaptiveRiskIncreaseMultiplier;
         }
-        else if(winRate < 0.4)
+        else if(winRate < AdaptiveRiskLowWinRate)
         {
-            riskPercent = RiskPercentage * 0.7; // Decrease by 30%
+            riskPercent = RiskPercentage * AdaptiveRiskDecreaseMultiplier;
         }
         
         // Cap maximum adjusted risk
