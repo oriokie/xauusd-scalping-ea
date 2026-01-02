@@ -54,10 +54,10 @@ input double TrailingStepATR = 0.5;          // Trailing Step ATR Multiplier
 input group "=== Trading Sessions ==="
 input bool TradeLondonSession = true;        // Trade London Session
 input bool TradeNewYorkSession = true;       // Trade New York Session
-input int LondonStartHour = 8;               // London Session Start Hour (GMT)
-input int LondonEndHour = 17;                // London Session End Hour (GMT)
-input int NewYorkStartHour = 13;             // New York Session Start Hour (GMT)
-input int NewYorkEndHour = 22;               // New York Session End Hour (GMT)
+input int LondonStartHour = 8;               // London Session Start Hour (in broker's local time)
+input int LondonEndHour = 17;                // London Session End Hour (in broker's local time)
+input int NewYorkStartHour = 13;             // New York Session Start Hour (in broker's local time)
+input int NewYorkEndHour = 22;               // New York Session End Hour (in broker's local time)
 
 //--- News Filter
 input group "=== News Filter ==="
@@ -222,7 +222,7 @@ void OnTick()
         {
             MqlDateTime tm;
             TimeToStruct(TimeCurrent(), tm);
-            Print(StringFormat("Outside trading session. Current server time: %02d:%02d (Hour %d, GMT). London: %s (%d-%d), New York: %s (%d-%d)", 
+            Print(StringFormat("Outside trading session. Current server time: %02d:%02d (Hour %d). London: %s (%d-%d), New York: %s (%d-%d)", 
                   tm.hour, tm.min, tm.hour,
                   TradeLondonSession ? "Enabled" : "Disabled", LondonStartHour, LondonEndHour,
                   TradeNewYorkSession ? "Enabled" : "Disabled", NewYorkStartHour, NewYorkEndHour));
