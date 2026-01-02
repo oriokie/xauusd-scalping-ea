@@ -393,7 +393,7 @@ double CalculateLotSize(double stopLossPoints)
     double riskPercent = RiskPercentage;
     
     // Adaptive risk based on win rate
-    if(UseAdaptiveRisk && dailyTrades >= 5)
+    if(UseAdaptiveRisk && dailyTrades >= 5) // Ensure sufficient sample size and prevent division by zero
     {
         double winRate = (double)dailyWins / dailyTrades;
         
@@ -784,12 +784,32 @@ bool CheckVolume()
     // Get current volume from last completed bar (index 1) for consistency
     long currentVolume = iVolume(_Symbol, PERIOD_CURRENT, 1);
     
+    // Check for error in volume retrieval
+    if(currentVolume <= 0)
+    {
+        lastErrorMsg = "Failed to get current volume";
+        return false;
+    }
+    
     // Calculate average volume over configurable lookback period
     long totalVolume = 0;
     
     for(int i = 1; i <= VolumeLookbackPeriod; i++)
     {
-        totalVolume += iVolume(_Symbol, PERIOD_CURRENT, i);
+        long vol = iVolume(_Symbol, PERIOD_CURRENT, i);
+        
+        // Skip invalid volume data
+        if(vol <= 0)
+            continue;
+            
+        totalVolume += vol;
+    }
+    
+    // Ensure we have valid data
+    if(totalVolume == 0)
+    {
+        lastErrorMsg = "Failed to get average volume data";
+        return false;
     }
     
     double averageVolume = (double)totalVolume / VolumeLookbackPeriod;
