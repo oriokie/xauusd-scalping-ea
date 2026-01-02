@@ -304,13 +304,21 @@ int GetEntrySignal()
     double currentPrice = (ask + bid) / 2.0;
     
     // Higher timeframe trend confirmation
+    // First check if we have enough HTF bars available
+    if(Bars(_Symbol, HigherTF) < 2)
+    {
+        // Not enough HTF data yet, skip trading
+        return 0;
+    }
+    
     double htfClose0 = iClose(_Symbol, HigherTF, 0);
     double htfClose1 = iClose(_Symbol, HigherTF, 1);
     
-    // Validate HTF data availability (iClose returns 0 on error, not negative values)
-    if(htfClose0 == 0 || htfClose1 == 0)
+    // Validate HTF data - for XAUUSD, price is typically > 1000
+    // If iClose returns 0, it means data retrieval failed
+    if(htfClose0 <= 0.0 || htfClose1 <= 0.0)
     {
-        // HTF data not available yet, skip trading
+        // HTF data retrieval failed, skip trading
         return 0;
     }
     
@@ -736,8 +744,8 @@ int CountOpenPositions()
 //+------------------------------------------------------------------+
 bool IsWithinTradingSession()
 {
-    // Use broker/server time instead of GMT
-    int currentHour = (TimeHour(TimeCurrent()) + SessionGMTOffset + 24) % 24;
+    // Use broker/server time with robust offset calculation
+    int currentHour = ((TimeHour(TimeCurrent()) + SessionGMTOffset) % 24 + 24) % 24;
     
     bool inLondon = false;
     bool inNewYork = false;
