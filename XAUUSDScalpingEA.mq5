@@ -392,10 +392,10 @@ double CalculateLotSize(double stopLossPoints)
     double balance = accountInfo.Balance();
     double riskPercent = RiskPercentage;
     
-    // Adaptive risk based on win rate
-    if(UseAdaptiveRisk && dailyTrades >= 5) // Ensure sufficient sample size and prevent division by zero
+    // Adaptive risk based on win rate (requires minimum sample size)
+    if(UseAdaptiveRisk && dailyTrades >= 5)
     {
-        double winRate = (double)dailyWins / dailyTrades;
+        double winRate = (double)dailyWins / dailyTrades; // Safe: dailyTrades >= 5
         
         // Increase risk if win rate is high, decrease if low
         if(winRate >= 0.6)
@@ -793,6 +793,7 @@ bool CheckVolume()
     
     // Calculate average volume over configurable lookback period
     long totalVolume = 0;
+    int validBars = 0;
     
     for(int i = 1; i <= VolumeLookbackPeriod; i++)
     {
@@ -803,16 +804,17 @@ bool CheckVolume()
             continue;
             
         totalVolume += vol;
+        validBars++;
     }
     
     // Ensure we have valid data
-    if(totalVolume == 0)
+    if(validBars == 0 || totalVolume == 0)
     {
         lastErrorMsg = "Failed to get average volume data";
         return false;
     }
     
-    double averageVolume = (double)totalVolume / VolumeLookbackPeriod;
+    double averageVolume = (double)totalVolume / validBars;
     
     // Check if current volume meets minimum threshold
     if(currentVolume < averageVolume * MinVolumeMultiplier)
