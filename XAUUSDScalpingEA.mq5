@@ -214,7 +214,17 @@ void OnTick()
     
     // Check trading session
     if(!IsWithinTradingSession())
+    {
+        // Also log when outside session to help debugging
+        if(isNewBar)
+        {
+            MqlDateTime tm;
+            TimeToStruct(TimeCurrent(), tm);
+            int currentHour = ((tm.hour + SessionGMTOffset) % 24 + 24) % 24;
+            Print("Outside trading session. Current hour (GMT adjusted): ", currentHour);
+        }
         return;
+    }
     
     // Check news filter
     if(UseNewsFilter && IsNewsTime())
@@ -305,8 +315,8 @@ int GetEntrySignal()
     double currentPrice = (ask + bid) / 2.0;
     
     // Higher timeframe trend confirmation
-    // First check if we have enough HTF bars available
-    if(Bars(_Symbol, HigherTF) < 2)
+    // First check if we have enough HTF bars available (need 3 bars for strong trend)
+    if(Bars(_Symbol, HigherTF) < 3)
     {
         // Not enough HTF data yet, skip trading
         return 0;
@@ -314,10 +324,11 @@ int GetEntrySignal()
     
     double htfClose0 = iClose(_Symbol, HigherTF, 0);
     double htfClose1 = iClose(_Symbol, HigherTF, 1);
+    double htfClose2 = iClose(_Symbol, HigherTF, 2);
     
     // Validate HTF data - for XAUUSD, price is typically > 1000
     // If iClose returns 0, it means data retrieval failed
-    if(htfClose0 <= 0.0 || htfClose1 <= 0.0)
+    if(htfClose0 <= 0.0 || htfClose1 <= 0.0 || htfClose2 <= 0.0)
     {
         // HTF data retrieval failed, skip trading
         return 0;
@@ -349,22 +360,25 @@ int GetEntrySignal()
     // Volatility check - prefer trading in higher volatility
     bool highVolatility = atrBuffer[0] > atrBuffer[1] * 1.1;
     
-    // Buy signal conditions - WITH higher timeframe filter and RSI
-    if(htfBullish && 
-       (bullishSweep || (macdBullish && priceBelowLowerBB)) && 
-       (priceNearLowerBB || priceBelowLowerBB) &&
-       (highVolatility || bullishSweep) && // Prefer high volatility or strong sweep
-       (rsiOversold || rsiBullishMomentum)) // RSI confirmation for better timing
+    // Additional stronger trend confirmation on higher timeframe
+    // Check multiple HTF bars for stronger trend (htfClose2 already retrieved above)
+    bool strongHTFBullish = (htfClose0 > htfClose1) && (htfClose1 > htfClose2);
+    bool strongHTFBearish = (htfClose0 < htfClose1) && (htfClose1 < htfClose2);
+    
+    // Buy signal conditions - MORE CONSERVATIVE with stronger confirmations
+    // Require: Strong HTF trend + Either liquidity sweep OR (MACD crossover + BB extreme + RSI confirmation)
+    if(strongHTFBullish && 
+       (bullishSweep || (macdBullish && priceBelowLowerBB && (rsiOversold || rsiBullishMomentum))) && 
+       highVolatility) // Require high volatility for all entries
     {
         return 1; // Buy
     }
     
-    // Sell signal conditions - WITH higher timeframe filter and RSI
-    if(htfBearish && 
-       (bearishSweep || (macdBearish && priceAboveUpperBB)) && 
-       (priceNearUpperBB || priceAboveUpperBB) &&
-       (highVolatility || bearishSweep) && // Prefer high volatility or strong sweep
-       (rsiOverbought || rsiBearishMomentum)) // RSI confirmation for better timing
+    // Sell signal conditions - MORE CONSERVATIVE with stronger confirmations
+    // Require: Strong HTF trend + Either liquidity sweep OR (MACD crossover + BB extreme + RSI confirmation)
+    if(strongHTFBearish && 
+       (bearishSweep || (macdBearish && priceAboveUpperBB && (rsiOverbought || rsiBearishMomentum))) && 
+       highVolatility) // Require high volatility for all entries
     {
         return -1; // Sell
     }
@@ -466,18 +480,26 @@ double CalculateLotSize(double stopLossPoints)
 void ExecuteBuyOrder()
 {
     double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
     double atr = atrBuffer[0];
     double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
     
+    // Calculate spread in points
+    double spreadPoints = (ask - bid) / point;
+    
     // Calculate SL and TP with minimum distance validation
+    // Increase SL multiplier for more breathing room
     double slDistance = atr * SL_ATR_Multiplier;
     double minSlDistance = MinStopLossPoints * point;
+    
+    // Add spread to minimum SL to account for execution costs
+    minSlDistance = MathMax(minSlDistance, (MinStopLossPoints + spreadPoints * 2) * point);
     
     // Ensure stop loss is not too tight
     if(slDistance < minSlDistance)
     {
         slDistance = minSlDistance;
-        Print("Warning: ATR-based SL too tight, using minimum SL distance: ", MinStopLossPoints, " points");
+        Print("Warning: ATR-based SL too tight, using minimum SL distance: ", minSlDistance/point, " points");
     }
     
     double tpDistance = atr * TP_ATR_Multiplier;
@@ -525,18 +547,26 @@ void ExecuteBuyOrder()
 void ExecuteSellOrder()
 {
     double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
     double atr = atrBuffer[0];
     double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
     
+    // Calculate spread in points
+    double spreadPoints = (ask - bid) / point;
+    
     // Calculate SL and TP with minimum distance validation
+    // Increase SL multiplier for more breathing room
     double slDistance = atr * SL_ATR_Multiplier;
     double minSlDistance = MinStopLossPoints * point;
+    
+    // Add spread to minimum SL to account for execution costs
+    minSlDistance = MathMax(minSlDistance, (MinStopLossPoints + spreadPoints * 2) * point);
     
     // Ensure stop loss is not too tight
     if(slDistance < minSlDistance)
     {
         slDistance = minSlDistance;
-        Print("Warning: ATR-based SL too tight, using minimum SL distance: ", MinStopLossPoints, " points");
+        Print("Warning: ATR-based SL too tight, using minimum SL distance: ", minSlDistance/point, " points");
     }
     
     double tpDistance = atr * TP_ATR_Multiplier;
@@ -746,7 +776,13 @@ int CountOpenPositions()
 bool IsWithinTradingSession()
 {
     // Use broker/server time with robust offset calculation
-    int currentHour = ((TimeHour(TimeCurrent()) + SessionGMTOffset) % 24 + 24) % 24;
+    datetime now = TimeCurrent();
+    MqlDateTime tm;                        
+    TimeToStruct(now, tm);                 // Convert datetime to struct
+    int currentHour = tm.hour;
+    
+    // Apply GMT offset with proper modulo to handle negative offsets
+    currentHour = ((currentHour + SessionGMTOffset) % 24 + 24) % 24;
     
     bool inLondon = false;
     bool inNewYork = false;
