@@ -395,7 +395,7 @@ double CalculateLotSize(double stopLossPoints)
     // Adaptive risk based on win rate (requires minimum sample size)
     if(UseAdaptiveRisk && dailyTrades >= 5)
     {
-        double winRate = (double)dailyWins / dailyTrades; // Safe: dailyTrades >= 5
+        double winRate = (double)dailyWins / dailyTrades;
         
         // Increase risk if win rate is high, decrease if low
         if(winRate >= 0.6)
@@ -781,6 +781,14 @@ bool CheckVolume()
     if(!UseVolumeFilter)
         return true;
     
+    // Check if we have enough bars in history
+    int availableBars = Bars(_Symbol, PERIOD_CURRENT);
+    if(availableBars < VolumeLookbackPeriod + 1)
+    {
+        lastErrorMsg = "Insufficient bars for volume analysis";
+        return false;
+    }
+    
     // Get current volume from last completed bar (index 1) for consistency
     long currentVolume = iVolume(_Symbol, PERIOD_CURRENT, 1);
     
@@ -808,7 +816,7 @@ bool CheckVolume()
     }
     
     // Ensure we have valid data
-    if(validBars == 0 || totalVolume == 0)
+    if(validBars == 0)
     {
         lastErrorMsg = "Failed to get average volume data";
         return false;
