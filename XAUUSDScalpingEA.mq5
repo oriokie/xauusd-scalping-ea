@@ -307,8 +307,8 @@ int GetEntrySignal()
     double htfClose0 = iClose(_Symbol, HigherTF, 0);
     double htfClose1 = iClose(_Symbol, HigherTF, 1);
     
-    // Validate HTF data availability
-    if(htfClose0 <= 0 || htfClose1 <= 0)
+    // Validate HTF data availability (iClose returns 0 on error, not negative values)
+    if(htfClose0 == 0 || htfClose1 == 0)
     {
         // HTF data not available yet, skip trading
         return 0;
@@ -408,7 +408,7 @@ double CalculateLotSize(double stopLossPoints)
     double riskPercent = RiskPercentage;
     
     // Adaptive risk based on win rate (requires minimum sample size)
-    if(UseAdaptiveRisk && dailyTrades >= AdaptiveRiskMinTrades)
+    if(UseAdaptiveRisk && dailyTrades >= AdaptiveRiskMinTrades && AdaptiveRiskMinTrades > 0)
     {
         // Calculate win rate (safe: dailyTrades >= AdaptiveRiskMinTrades > 0)
         double winRate = (double)dailyWins / dailyTrades;
@@ -796,6 +796,13 @@ bool CheckVolume()
 {
     if(!UseVolumeFilter)
         return true;
+    
+    // Validate lookback period
+    if(VolumeLookbackPeriod <= 0)
+    {
+        lastErrorMsg = "Invalid volume lookback period";
+        return false;
+    }
     
     // Check if we have enough bars in history
     int availableBars = Bars(_Symbol, PERIOD_CURRENT);
