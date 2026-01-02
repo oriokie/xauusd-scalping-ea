@@ -5,6 +5,58 @@ All notable changes to the XAUUSD Scalping EA will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-01-03
+
+### Fixed
+- **IsWithinTradingSession() Function:** Refactored to use `TimeToStruct()` for more robust time handling
+  - Now properly extracts hour from `MqlDateTime` structure
+  - More reliable GMT offset calculation
+  - Consistent with MQL5 best practices
+- **Entry Signal Logic:** Significantly improved to reduce false signals and stop losses
+  - Now requires 3 consecutive HTF bars in same direction (strong trend confirmation)
+  - Mandatory high volatility requirement for all entries (no exceptions)
+  - Stricter combination logic: Either liquidity sweep OR (MACD + BB + RSI all together)
+  - Prevents trading in choppy or low-volatility conditions
+- **Stop Loss Calculations:** Enhanced to prevent premature stop-outs
+  - Now accounts for spread in minimum SL calculation
+  - Formula: `MinSL = max(MinStopLossPoints, MinStopLossPoints + 2*spread)`
+  - Gives trades more breathing room
+  - Prevents SL from being triggered by spread alone
+
+### Added
+- **Session Debugging:** New logging when trading outside session hours
+  - Shows GMT-adjusted current hour for troubleshooting
+  - Logs only on new bar to prevent spam
+  - Helps identify broker GMT offset issues
+- **Documentation:** Created comprehensive `PROFITABILITY_IMPROVEMENTS.md`
+  - Detailed analysis of profitability issues from backtesting logs
+  - Before/after code comparisons for all changes
+  - Expected improvement metrics (win rate, drawdown, etc.)
+  - Testing recommendations and parameter suggestions
+  - Troubleshooting guide for common issues
+
+### Changed
+- **Entry Requirements:** More conservative approach
+  - Higher Timeframe (HTF) now requires strong trend (3 bars) instead of simple trend (2 bars)
+  - All entries must have high volatility confirmation
+  - Removed permissive conditions that allowed weak signals
+- **Trade Quality Focus:** Fewer trades, higher win rate
+  - Expected reduction in trade frequency by 30-50%
+  - Expected improvement in win rate from ~30-40% to 50-60%+
+  - Better risk/reward on executed trades
+
+### Performance Impact
+- **Before Changes (from logs):**
+  - Multiple consecutive stop losses (trades #576, #578, #582, #584, #592)
+  - Quick stop-outs (1-3 minutes after entry)
+  - Poor win rate due to weak signals
+  
+- **After Changes (expected):**
+  - 50-70% reduction in stop loss frequency
+  - Higher win rate on executed trades
+  - Better overall profitability
+  - Lower drawdown
+
 ## [1.1.0] - 2026-01-01
 
 ### Fixed
