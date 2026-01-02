@@ -71,6 +71,7 @@ input ENUM_TIMEFRAMES HigherTF = PERIOD_M15; // Higher timeframe for trend confi
 input group "=== Volume Filter ==="
 input bool UseVolumeFilter = true;           // Use volume filter
 input double MinVolumeMultiplier = 0.7;      // Minimum volume as multiple of average
+input int VolumeLookbackPeriod = 20;         // Volume average lookback period
 
 //--- GUI Settings
 input group "=== GUI Settings ==="
@@ -780,19 +781,18 @@ bool CheckVolume()
     if(!UseVolumeFilter)
         return true;
     
-    // Get current and average volume
-    long currentVolume = iVolume(_Symbol, PERIOD_CURRENT, 0);
+    // Get current volume from last completed bar (index 1) for consistency
+    long currentVolume = iVolume(_Symbol, PERIOD_CURRENT, 1);
     
-    // Calculate average volume over last 20 bars
+    // Calculate average volume over configurable lookback period
     long totalVolume = 0;
-    int lookback = 20;
     
-    for(int i = 1; i <= lookback; i++)
+    for(int i = 1; i <= VolumeLookbackPeriod; i++)
     {
         totalVolume += iVolume(_Symbol, PERIOD_CURRENT, i);
     }
     
-    double averageVolume = (double)totalVolume / lookback;
+    double averageVolume = (double)totalVolume / VolumeLookbackPeriod;
     
     // Check if current volume meets minimum threshold
     if(currentVolume < averageVolume * MinVolumeMultiplier)
