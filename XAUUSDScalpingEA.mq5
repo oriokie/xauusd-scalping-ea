@@ -18,6 +18,7 @@ input group "=== Risk Management ==="
 input double RiskPercentage = 1.0;           // Risk per trade (%)
 input double MaxDailyLossPercent = 5.0;      // Maximum daily loss (%)
 input double MaxSpreadPoints = 50;           // Maximum spread in points
+input bool UseAdaptiveRisk = true;           // Use adaptive risk based on win rate
 
 //--- Indicator Settings
 input group "=== Indicator Settings ==="
@@ -27,6 +28,9 @@ input int MACD_Signal = 9;                   // MACD Signal
 input int BB_Period = 20;                    // Bollinger Bands Period
 input double BB_Deviation = 2.0;             // Bollinger Bands Deviation
 input int ATR_Period = 14;                   // ATR Period for volatility
+input int RSI_Period = 14;                   // RSI Period for momentum
+input double RSI_Oversold = 30.0;            // RSI Oversold Level
+input double RSI_Overbought = 70.0;          // RSI Overbought Level
 
 //--- Take Profit and Stop Loss
 input group "=== Trade Settings ==="
@@ -46,6 +50,7 @@ input int LondonStartHour = 8;               // London Session Start Hour
 input int LondonEndHour = 17;                // London Session End Hour
 input int NewYorkStartHour = 13;             // New York Session Start Hour
 input int NewYorkEndHour = 22;               // New York Session End Hour
+input int SessionGMTOffset = 0;              // Broker GMT Offset for session times
 
 //--- News Filter
 input group "=== News Filter ==="
@@ -57,6 +62,15 @@ input group "=== Scalping Settings ==="
 input int MinProfitPoints = 20;              // Minimum profit in points to consider exit
 input bool UseMeanReversion = true;          // Use mean reversion exits
 input int MaxPositions = 1;                  // Maximum concurrent positions
+
+//--- Higher Timeframe Trend Filter
+input group "=== Higher Timeframe Filter ==="
+input ENUM_TIMEFRAMES HigherTF = PERIOD_M15; // Higher timeframe for trend confirmation
+
+//--- Volume Filter
+input group "=== Volume Filter ==="
+input bool UseVolumeFilter = true;           // Use volume filter
+input double MinVolumeMultiplier = 0.7;      // Minimum volume as multiple of average
 
 //--- GUI Settings
 input group "=== GUI Settings ==="
@@ -74,10 +88,12 @@ CAccountInfo accountInfo;
 int macdHandle;
 int bbHandle;
 int atrHandle;
+int rsiHandle;
 
 double macdMain[], macdSignal[];
 double bbUpper[], bbMiddle[], bbLower[];
 double atrBuffer[];
+double rsiBuffer[];
 
 datetime lastBarTime;
 datetime dailyStartTime;
@@ -106,8 +122,10 @@ int OnInit()
     macdHandle = iMACD(_Symbol, PERIOD_CURRENT, MACD_Fast, MACD_Slow, MACD_Signal, PRICE_CLOSE);
     bbHandle = iBands(_Symbol, PERIOD_CURRENT, BB_Period, 0, BB_Deviation, PRICE_CLOSE);
     atrHandle = iATR(_Symbol, PERIOD_CURRENT, ATR_Period);
+    rsiHandle = iRSI(_Symbol, PERIOD_CURRENT, RSI_Period, PRICE_CLOSE);
     
-    if(macdHandle == INVALID_HANDLE || bbHandle == INVALID_HANDLE || atrHandle == INVALID_HANDLE)
+    if(macdHandle == INVALID_HANDLE || bbHandle == INVALID_HANDLE || 
+       atrHandle == INVALID_HANDLE || rsiHandle == INVALID_HANDLE)
     {
         Print("Error creating indicators");
         return(INIT_FAILED);
@@ -120,6 +138,7 @@ int OnInit()
     ArraySetAsSeries(bbMiddle, true);
     ArraySetAsSeries(bbLower, true);
     ArraySetAsSeries(atrBuffer, true);
+    ArraySetAsSeries(rsiBuffer, true);
     
     // Initialize daily tracking
     dailyStartTime = TimeCurrent();
@@ -142,6 +161,7 @@ void OnDeinit(const int reason)
     IndicatorRelease(macdHandle);
     IndicatorRelease(bbHandle);
     IndicatorRelease(atrHandle);
+    IndicatorRelease(rsiHandle);
     
     // Remove GUI objects
     DeleteInfoPanel();
@@ -193,6 +213,10 @@ void OnTick()
     
     // Check spread
     if(!CheckSpread())
+        return;
+    
+    // Check volume
+    if(!CheckVolume())
         return;
     
     // Check for new bar
@@ -252,6 +276,13 @@ bool UpdateIndicators()
         return false;
     }
     
+    // Copy RSI
+    if(CopyBuffer(rsiHandle, 0, 0, 3, rsiBuffer) <= 0)
+    {
+        lastErrorMsg = "Failed to copy RSI data";
+        return false;
+    }
+    
     return true;
 }
 
@@ -264,6 +295,12 @@ int GetEntrySignal()
     double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
     double currentPrice = (ask + bid) / 2.0;
     
+    // Higher timeframe trend confirmation
+    double htfClose0 = iClose(_Symbol, HigherTF, 0);
+    double htfClose1 = iClose(_Symbol, HigherTF, 1);
+    bool htfBullish = (htfClose0 > htfClose1);
+    bool htfBearish = (htfClose0 < htfClose1);
+    
     // Check for liquidity sweep and early entry
     bool bullishSweep = DetectLiquiditySweep(true);
     bool bearishSweep = DetectLiquiditySweep(false);
@@ -271,6 +308,12 @@ int GetEntrySignal()
     // MACD conditions
     bool macdBullish = (macdMain[0] > macdSignal[0]) && (macdMain[1] <= macdSignal[1]);
     bool macdBearish = (macdMain[0] < macdSignal[0]) && (macdMain[1] >= macdSignal[1]);
+    
+    // RSI momentum conditions - for better entries
+    bool rsiOversold = (rsiBuffer[0] < RSI_Oversold);
+    bool rsiOverbought = (rsiBuffer[0] > RSI_Overbought);
+    bool rsiBullishMomentum = (rsiBuffer[0] > rsiBuffer[1]) && (rsiBuffer[0] < 60); // Building momentum
+    bool rsiBearishMomentum = (rsiBuffer[0] < rsiBuffer[1]) && (rsiBuffer[0] > 40); // Building momentum
     
     // Bollinger Bands conditions
     bool priceBelowLowerBB = currentPrice < bbLower[0];
@@ -281,18 +324,22 @@ int GetEntrySignal()
     // Volatility check - prefer trading in higher volatility
     bool highVolatility = atrBuffer[0] > atrBuffer[1] * 1.1;
     
-    // Buy signal conditions
-    if((bullishSweep || (macdBullish && priceBelowLowerBB)) && 
+    // Buy signal conditions - WITH higher timeframe filter and RSI
+    if(htfBullish && 
+       (bullishSweep || (macdBullish && priceBelowLowerBB)) && 
        (priceNearLowerBB || priceBelowLowerBB) &&
-       (highVolatility || bullishSweep)) // Prefer high volatility or strong sweep
+       (highVolatility || bullishSweep) && // Prefer high volatility or strong sweep
+       (rsiOversold || rsiBullishMomentum)) // RSI confirmation for better timing
     {
         return 1; // Buy
     }
     
-    // Sell signal conditions
-    if((bearishSweep || (macdBearish && priceAboveUpperBB)) && 
+    // Sell signal conditions - WITH higher timeframe filter and RSI
+    if(htfBearish && 
+       (bearishSweep || (macdBearish && priceAboveUpperBB)) && 
        (priceNearUpperBB || priceAboveUpperBB) &&
-       (highVolatility || bearishSweep)) // Prefer high volatility or strong sweep
+       (highVolatility || bearishSweep) && // Prefer high volatility or strong sweep
+       (rsiOverbought || rsiBearishMomentum)) // RSI confirmation for better timing
     {
         return -1; // Sell
     }
@@ -342,7 +389,29 @@ bool DetectLiquiditySweep(bool bullish)
 double CalculateLotSize(double stopLossPoints)
 {
     double balance = accountInfo.Balance();
-    double riskAmount = balance * (RiskPercentage / 100.0);
+    double riskPercent = RiskPercentage;
+    
+    // Adaptive risk based on win rate
+    if(UseAdaptiveRisk && dailyTrades >= 5)
+    {
+        double winRate = (double)dailyWins / dailyTrades;
+        
+        // Increase risk if win rate is high, decrease if low
+        if(winRate >= 0.6)
+        {
+            riskPercent = RiskPercentage * 1.2; // Increase by 20%
+        }
+        else if(winRate < 0.4)
+        {
+            riskPercent = RiskPercentage * 0.7; // Decrease by 30%
+        }
+        
+        // Cap maximum adjusted risk
+        if(riskPercent > RiskPercentage * 1.5)
+            riskPercent = RiskPercentage * 1.5;
+    }
+    
+    double riskAmount = balance * (riskPercent / 100.0);
     
     double tickValue = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
     double tickSize = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
@@ -650,9 +719,8 @@ int CountOpenPositions()
 //+------------------------------------------------------------------+
 bool IsWithinTradingSession()
 {
-    MqlDateTime timeStruct;
-    TimeToStruct(TimeGMT(), timeStruct);
-    int currentHour = timeStruct.hour;
+    // Use broker/server time instead of GMT
+    int currentHour = (TimeHour(TimeCurrent()) + SessionGMTOffset + 24) % 24;
     
     bool inLondon = false;
     bool inNewYork = false;
@@ -702,6 +770,37 @@ bool CheckSpread()
     double spreadPoints = (ask - bid) / point;
     
     return (spreadPoints <= MaxSpreadPoints);
+}
+
+//+------------------------------------------------------------------+
+//| Check volume filter                                              |
+//+------------------------------------------------------------------+
+bool CheckVolume()
+{
+    if(!UseVolumeFilter)
+        return true;
+    
+    // Get current and average volume
+    long currentVolume = iVolume(_Symbol, PERIOD_CURRENT, 0);
+    
+    // Calculate average volume over last 20 bars
+    long totalVolume = 0;
+    int lookback = 20;
+    
+    for(int i = 1; i <= lookback; i++)
+    {
+        totalVolume += iVolume(_Symbol, PERIOD_CURRENT, i);
+    }
+    
+    double averageVolume = (double)totalVolume / lookback;
+    
+    // Check if current volume meets minimum threshold
+    if(currentVolume < averageVolume * MinVolumeMultiplier)
+    {
+        return false;
+    }
+    
+    return true;
 }
 
 //+------------------------------------------------------------------+
