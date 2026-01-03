@@ -39,6 +39,7 @@ input int ATR_Period = 14;                         // ATR Period
 input double ATR_ZoneMultiplier = 1.5;             // ATR multiplier for zone validation
 input double ATR_StopLossMultiplier = 1.5;         // Stop Loss ATR Multiplier
 input double ATR_TakeProfitMultiplier = 3.0;       // Take Profit ATR Multiplier
+input double ATR_BreakoutMultiplier = 1.5;         // Breakout detection ATR multiplier
 
 //--- Structure Detection Settings
 input group "=== Structure Detection ==="
@@ -46,6 +47,9 @@ input int SwingLookback = 20;                      // Bars to lookback for swing
 input double MinDisplacementPercent = 0.3;         // Minimum displacement (% of ATR)
 input int OrderBlockBars = 5;                      // Bars to analyze for Order Blocks
 input int FVG_MinGapPoints = 20;                   // Minimum FVG gap in points
+input bool UseSwingPointSL = true;                 // Use swing points for stop-loss
+input bool UseBreakEvenStop = true;                // Enable break-even stop-loss
+input double BreakEvenTriggerRatio = 0.5;          // Break-even trigger (ratio of TP distance)
 
 //--- Entry Validation (9-Point System)
 input group "=== 9-Point Entry Validation ==="
@@ -64,11 +68,17 @@ input int MinValidationPoints = 6;                 // Minimum validation points 
 input group "=== Trading Sessions ==="
 input bool TradeLondonSession = true;              // Trade London Session
 input bool TradeNewYorkSession = true;             // Trade New York Session
+input bool TradeAsianSession = false;              // Trade Asian Session
+input int AsianStartHour = 0;                      // Asian Start Hour (GMT)
+input int AsianEndHour = 6;                        // Asian End Hour (GMT)
 input int LondonStartHour = 8;                     // London Start Hour (GMT)
 input int LondonEndHour = 17;                      // London End Hour (GMT)
 input int NewYorkStartHour = 13;                   // New York Start Hour (GMT)
 input int NewYorkEndHour = 22;                     // New York End Hour (GMT)
 input int SessionGMTOffset = 0;                    // Broker GMT Offset
+input bool UseAsianHighLow = true;                 // Use Asian High/Low levels
+input bool AsianRangeBound = true;                 // Asian session: range-bound strategy
+input bool LondonNYBreakout = true;                // London/NY sessions: breakout strategy
 
 //--- Dashboard Settings
 input group "=== Dashboard Settings ==="
@@ -132,6 +142,16 @@ struct SupportResistanceZone {
 
 SupportResistanceZone h1Zones[];
 
+// Asian Session High/Low Tracking
+struct AsianSessionLevels {
+    double high;
+    double low;
+    datetime sessionDate;
+    bool isValid;
+};
+
+AsianSessionLevels asianLevels;
+
 // Daily Statistics
 datetime dailyStartTime;
 double dailyStartBalance;
@@ -151,6 +171,8 @@ struct EntryValidation {
     bool atrZoneValid;
     bool validRiskReward;
     bool sessionActive;
+    bool breakoutDetected;
+    bool asianLevelValid;
     int totalPoints;
 };
 
@@ -158,6 +180,10 @@ EntryValidation currentValidation;
 
 datetime lastBarTime;
 string lastErrorMsg = "";
+
+// Session tracking
+enum SESSION_TYPE { SESSION_ASIAN, SESSION_LONDON, SESSION_NEWYORK, SESSION_NONE };
+SESSION_TYPE currentSession = SESSION_NONE;
 
 //+------------------------------------------------------------------+
 //| Expert initialization function                                   |
@@ -191,6 +217,12 @@ int OnInit()
     ArrayResize(h1OrderBlocks, 0);
     ArrayResize(h1FVGs, 0);
     ArrayResize(h1Zones, 0);
+    
+    // Initialize Asian levels
+    asianLevels.high = 0;
+    asianLevels.low = 0;
+    asianLevels.sessionDate = 0;
+    asianLevels.isValid = false;
     
     // Initialize daily tracking
     dailyStartTime = TimeCurrent();
@@ -230,6 +262,13 @@ void OnTick()
 {
     // Check for new day
     CheckNewDay();
+    
+    // Update current session
+    UpdateCurrentSession();
+    
+    // Update Asian session high/low
+    if(UseAsianHighLow)
+        UpdateAsianSessionLevels();
     
     // Update ATR buffers
     if(!UpdateATRBuffers())
@@ -681,14 +720,50 @@ int AnalyzeEntryOpportunity()
     if(currentValidation.atrZoneValid)
         currentValidation.totalPoints++;
     
-    // 8. Valid Risk/Reward
+    // 8. Breakout Detection
+    currentValidation.breakoutDetected = DetectBreakout();
+    if(currentValidation.breakoutDetected)
+        currentValidation.totalPoints++;
+    
+    // 9. Asian Level Validation
+    if(UseAsianHighLow && asianLevels.isValid)
+    {
+        double currentPrice = (SymbolInfoDouble(_Symbol, SYMBOL_BID) + 
+                              SymbolInfoDouble(_Symbol, SYMBOL_ASK)) / 2.0;
+        
+        // Check if price is near Asian high/low
+        double distanceToHigh = MathAbs(currentPrice - asianLevels.high);
+        double distanceToLow = MathAbs(currentPrice - asianLevels.low);
+        
+        if(distanceToHigh < atrM5[0] * 0.5 || distanceToLow < atrM5[0] * 0.5)
+        {
+            currentValidation.asianLevelValid = true;
+            currentValidation.totalPoints++;
+        }
+    }
+    
+    // 10. Valid Risk/Reward
     currentValidation.validRiskReward = true; // Will be validated in order execution
     currentValidation.totalPoints++;
     
-    // 9. Session Filter
+    // 11. Session Filter
     currentValidation.sessionActive = IsWithinTradingSession();
     if(currentValidation.sessionActive)
         currentValidation.totalPoints++;
+    
+    // Apply session-specific strategies
+    if(AsianRangeBound && currentSession == SESSION_ASIAN)
+    {
+        // In Asian session, favor range-bound setups, avoid breakouts
+        if(currentValidation.breakoutDetected)
+            return 0; // Skip breakout trades during Asian session
+    }
+    
+    if(LondonNYBreakout && (currentSession == SESSION_LONDON || currentSession == SESSION_NEWYORK))
+    {
+        // In London/NY sessions, favor breakout patterns
+        // Breakout detection adds to validation points
+    }
     
     // Check if minimum validation points met
     if(currentValidation.totalPoints < MinValidationPoints)
@@ -783,6 +858,70 @@ bool DetectLiquiditySweep()
 }
 
 //+------------------------------------------------------------------+
+//| Detect breakout using volatility expansion                       |
+//+------------------------------------------------------------------+
+bool DetectBreakout()
+{
+    if(Bars(_Symbol, M5_Timeframe) < 5)
+        return false;
+    
+    // Get recent candle data
+    double close0 = iClose(_Symbol, M5_Timeframe, 0);
+    double open0 = iOpen(_Symbol, M5_Timeframe, 0);
+    double high0 = iHigh(_Symbol, M5_Timeframe, 0);
+    double low0 = iLow(_Symbol, M5_Timeframe, 0);
+    
+    double close1 = iClose(_Symbol, M5_Timeframe, 1);
+    double open1 = iOpen(_Symbol, M5_Timeframe, 1);
+    double high1 = iHigh(_Symbol, M5_Timeframe, 1);
+    double low1 = iLow(_Symbol, M5_Timeframe, 1);
+    
+    // Calculate candle range
+    double range0 = high0 - low0;
+    double range1 = high1 - low1;
+    
+    // Check if range exceeds ATR threshold (volatility expansion)
+    bool volatilityExpansion = (range0 > atrM5[0] * ATR_BreakoutMultiplier) ||
+                               (range1 > atrM5[0] * ATR_BreakoutMultiplier);
+    
+    if(!volatilityExpansion)
+        return false;
+    
+    // Check for breakout of swing points
+    double swingHigh = -1;
+    double swingLow = 999999;
+    
+    for(int i = 2; i < 10; i++)
+    {
+        double high = iHigh(_Symbol, M5_Timeframe, i);
+        double low = iLow(_Symbol, M5_Timeframe, i);
+        
+        if(high > swingHigh)
+            swingHigh = high;
+        if(low < swingLow)
+            swingLow = low;
+    }
+    
+    // Bullish breakout
+    bool bullishBreakout = (close0 > swingHigh) && (h4Trend == TREND_BULLISH);
+    
+    // Bearish breakout
+    bool bearishBreakout = (close0 < swingLow) && (h4Trend == TREND_BEARISH);
+    
+    // Check for breakout of Asian levels if available
+    if(UseAsianHighLow && asianLevels.isValid && 
+       (currentSession == SESSION_LONDON || currentSession == SESSION_NEWYORK))
+    {
+        bool asianHighBreakout = (close0 > asianLevels.high) && (h4Trend == TREND_BULLISH);
+        bool asianLowBreakout = (close0 < asianLevels.low) && (h4Trend == TREND_BEARISH);
+        
+        return (bullishBreakout || bearishBreakout || asianHighBreakout || asianLowBreakout);
+    }
+    
+    return (bullishBreakout || bearishBreakout);
+}
+
+//+------------------------------------------------------------------+
 //| Validate ATR-implied zones                                       |
 //+------------------------------------------------------------------+
 bool ValidateATRZone()
@@ -802,6 +941,65 @@ bool ValidateATRZone()
 }
 
 //+------------------------------------------------------------------+
+//| Find nearest swing point for stop-loss                           |
+//+------------------------------------------------------------------+
+double FindSwingPointSL(bool isBuyOrder, double entryPrice)
+{
+    if(!UseSwingPointSL)
+        return 0.0;
+    
+    double swingPoint = 0.0;
+    
+    if(isBuyOrder)
+    {
+        // For buy orders, find recent swing low
+        double lowestLow = 999999;
+        for(int i = 1; i < SwingLookback; i++)
+        {
+            double low = iLow(_Symbol, M5_Timeframe, i);
+            if(low < lowestLow && low < entryPrice)
+                lowestLow = low;
+        }
+        
+        if(lowestLow < 999999)
+            swingPoint = lowestLow;
+    }
+    else
+    {
+        // For sell orders, find recent swing high
+        double highestHigh = -1;
+        for(int i = 1; i < SwingLookback; i++)
+        {
+            double high = iHigh(_Symbol, M5_Timeframe, i);
+            if(high > highestHigh && high > entryPrice)
+                highestHigh = high;
+        }
+        
+        if(highestHigh > 0)
+            swingPoint = highestHigh;
+    }
+    
+    // Also check H1 zones for better stop placement
+    for(int i = 0; i < ArraySize(h1Zones); i++)
+    {
+        if(isBuyOrder && h1Zones[i].isSupport && h1Zones[i].level < entryPrice)
+        {
+            // Use support zone as stop if it's closer than swing point
+            if(swingPoint == 0.0 || h1Zones[i].level > swingPoint)
+                swingPoint = h1Zones[i].level;
+        }
+        else if(!isBuyOrder && !h1Zones[i].isSupport && h1Zones[i].level > entryPrice)
+        {
+            // Use resistance zone as stop if it's closer than swing point
+            if(swingPoint == 0.0 || h1Zones[i].level < swingPoint)
+                swingPoint = h1Zones[i].level;
+        }
+    }
+    
+    return swingPoint;
+}
+
+//+------------------------------------------------------------------+
 //| Execute buy order                                                |
 //+------------------------------------------------------------------+
 void ExecuteBuyOrder()
@@ -809,9 +1007,22 @@ void ExecuteBuyOrder()
     double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
     double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
     
-    // Calculate SL and TP
+    // Calculate initial SL and TP
     double slDistance = atrM5[0] * ATR_StopLossMultiplier;
     double tpDistance = atrM5[0] * ATR_TakeProfitMultiplier;
+    
+    // Check for swing point SL
+    double swingPointSL = FindSwingPointSL(true, ask);
+    if(swingPointSL > 0.0)
+    {
+        double swingDistance = ask - swingPointSL;
+        // Use swing point if it provides better (wider) stop
+        if(swingDistance > slDistance && swingDistance < slDistance * 2.0)
+        {
+            slDistance = swingDistance;
+            lastErrorMsg = "Using swing point SL";
+        }
+    }
     
     // Ensure minimum RR ratio
     if(tpDistance < slDistance * MinRiskRewardRatio)
@@ -836,7 +1047,7 @@ void ExecuteBuyOrder()
     if(trade.Buy(lotSize, _Symbol, ask, sl, tp, "Simba Sniper Buy"))
     {
         dailyTrades++;
-        Print(StringFormat("BUY order executed at %.2f, SL: %.2f, TP: %.2f, Lot: %.2f, Validation: %d/9", 
+        Print(StringFormat("BUY order executed at %.2f, SL: %.2f, TP: %.2f, Lot: %.2f, Validation: %d/11", 
               ask, sl, tp, lotSize, currentValidation.totalPoints));
     }
     else
@@ -854,9 +1065,22 @@ void ExecuteSellOrder()
     double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
     double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
     
-    // Calculate SL and TP
+    // Calculate initial SL and TP
     double slDistance = atrM5[0] * ATR_StopLossMultiplier;
     double tpDistance = atrM5[0] * ATR_TakeProfitMultiplier;
+    
+    // Check for swing point SL
+    double swingPointSL = FindSwingPointSL(false, bid);
+    if(swingPointSL > 0.0)
+    {
+        double swingDistance = swingPointSL - bid;
+        // Use swing point if it provides better (wider) stop
+        if(swingDistance > slDistance && swingDistance < slDistance * 2.0)
+        {
+            slDistance = swingDistance;
+            lastErrorMsg = "Using swing point SL";
+        }
+    }
     
     // Ensure minimum RR ratio
     if(tpDistance < slDistance * MinRiskRewardRatio)
@@ -881,7 +1105,7 @@ void ExecuteSellOrder()
     if(trade.Sell(lotSize, _Symbol, bid, sl, tp, "Simba Sniper Sell"))
     {
         dailyTrades++;
-        Print(StringFormat("SELL order executed at %.2f, SL: %.2f, TP: %.2f, Lot: %.2f, Validation: %d/9", 
+        Print(StringFormat("SELL order executed at %.2f, SL: %.2f, TP: %.2f, Lot: %.2f, Validation: %d/11", 
               bid, sl, tp, lotSize, currentValidation.totalPoints));
     }
     else
@@ -925,7 +1149,6 @@ double CalculateLotSize(double stopLossPoints)
 //+------------------------------------------------------------------+
 void ManageOpenPositions()
 {
-    // Simple position management - could be enhanced
     for(int i = PositionsTotal() - 1; i >= 0; i--)
     {
         if(positionInfo.SelectByIndex(i))
@@ -933,7 +1156,47 @@ void ManageOpenPositions()
             if(positionInfo.Symbol() != _Symbol)
                 continue;
             
-            // Add trailing stop or partial close logic here if needed
+            // Implement break-even stop-loss
+            if(UseBreakEvenStop)
+            {
+                double openPrice = positionInfo.PriceOpen();
+                double currentSL = positionInfo.StopLoss();
+                double currentTP = positionInfo.TakeProfit();
+                double currentPrice = positionInfo.PriceCurrent();
+                
+                if(positionInfo.Type() == POSITION_TYPE_BUY)
+                {
+                    double tpDistance = currentTP - openPrice;
+                    double triggerPrice = openPrice + (tpDistance * BreakEvenTriggerRatio);
+                    
+                    // Move SL to break-even + small buffer when price reaches trigger
+                    if(currentPrice >= triggerPrice && currentSL < openPrice)
+                    {
+                        double newSL = openPrice + (atrM5[0] * 0.1); // Small buffer above entry
+                        if(trade.PositionModify(positionInfo.Ticket(), newSL, currentTP))
+                        {
+                            Print(StringFormat("Break-even SL set for BUY #%d at %.2f", 
+                                  positionInfo.Ticket(), newSL));
+                        }
+                    }
+                }
+                else if(positionInfo.Type() == POSITION_TYPE_SELL)
+                {
+                    double tpDistance = openPrice - currentTP;
+                    double triggerPrice = openPrice - (tpDistance * BreakEvenTriggerRatio);
+                    
+                    // Move SL to break-even - small buffer when price reaches trigger
+                    if(currentPrice <= triggerPrice && (currentSL > openPrice || currentSL == 0))
+                    {
+                        double newSL = openPrice - (atrM5[0] * 0.1); // Small buffer below entry
+                        if(trade.PositionModify(positionInfo.Ticket(), newSL, currentTP))
+                        {
+                            Print(StringFormat("Break-even SL set for SELL #%d at %.2f", 
+                                  positionInfo.Ticket(), newSL));
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -956,6 +1219,67 @@ int CountOpenPositions()
 }
 
 //+------------------------------------------------------------------+
+//| Update current trading session                                   |
+//+------------------------------------------------------------------+
+void UpdateCurrentSession()
+{
+    datetime now = TimeCurrent();
+    MqlDateTime tm;
+    TimeToStruct(now, tm);
+    int currentHour = tm.hour;
+    
+    // Apply GMT offset
+    currentHour = ((currentHour + SessionGMTOffset) % 24 + 24) % 24;
+    
+    // Determine current session
+    if(currentHour >= AsianStartHour && currentHour < AsianEndHour)
+        currentSession = SESSION_ASIAN;
+    else if(currentHour >= LondonStartHour && currentHour < LondonEndHour)
+        currentSession = SESSION_LONDON;
+    else if(currentHour >= NewYorkStartHour && currentHour < NewYorkEndHour)
+        currentSession = SESSION_NEWYORK;
+    else
+        currentSession = SESSION_NONE;
+}
+
+//+------------------------------------------------------------------+
+//| Update Asian session high and low levels                         |
+//+------------------------------------------------------------------+
+void UpdateAsianSessionLevels()
+{
+    MqlDateTime currentTime;
+    TimeToStruct(TimeCurrent(), currentTime);
+    
+    // Check if we need to reset for a new day
+    MqlDateTime sessionTime;
+    TimeToStruct(asianLevels.sessionDate, sessionTime);
+    
+    if(currentTime.day != sessionTime.day || !asianLevels.isValid)
+    {
+        // New day - reset Asian levels
+        asianLevels.high = 0;
+        asianLevels.low = 999999;
+        asianLevels.sessionDate = TimeCurrent();
+        asianLevels.isValid = false;
+    }
+    
+    // During Asian session, track high and low
+    if(currentSession == SESSION_ASIAN)
+    {
+        double currentHigh = iHigh(_Symbol, PERIOD_M5, 0);
+        double currentLow = iLow(_Symbol, PERIOD_M5, 0);
+        
+        if(currentHigh > asianLevels.high || asianLevels.high == 0)
+            asianLevels.high = currentHigh;
+        
+        if(currentLow < asianLevels.low || asianLevels.low == 999999)
+            asianLevels.low = currentLow;
+        
+        asianLevels.isValid = true;
+    }
+}
+
+//+------------------------------------------------------------------+
 //| Check if within trading session                                  |
 //+------------------------------------------------------------------+
 bool IsWithinTradingSession()
@@ -968,8 +1292,12 @@ bool IsWithinTradingSession()
     // Apply GMT offset
     currentHour = ((currentHour + SessionGMTOffset) % 24 + 24) % 24;
     
+    bool inAsian = false;
     bool inLondon = false;
     bool inNewYork = false;
+    
+    if(TradeAsianSession)
+        inAsian = (currentHour >= AsianStartHour && currentHour < AsianEndHour);
     
     if(TradeLondonSession)
         inLondon = (currentHour >= LondonStartHour && currentHour < LondonEndHour);
@@ -977,7 +1305,7 @@ bool IsWithinTradingSession()
     if(TradeNewYorkSession)
         inNewYork = (currentHour >= NewYorkStartHour && currentHour < NewYorkEndHour);
     
-    return (inLondon || inNewYork);
+    return (inAsian || inLondon || inNewYork);
 }
 
 //+------------------------------------------------------------------+
@@ -1027,7 +1355,7 @@ void CreateDashboard()
     ObjectSetInteger(0, prefix + "BG", OBJPROP_XDISTANCE, DashboardX);
     ObjectSetInteger(0, prefix + "BG", OBJPROP_YDISTANCE, DashboardY);
     ObjectSetInteger(0, prefix + "BG", OBJPROP_XSIZE, 350);
-    ObjectSetInteger(0, prefix + "BG", OBJPROP_YSIZE, 500);
+    ObjectSetInteger(0, prefix + "BG", OBJPROP_YSIZE, 520);
     ObjectSetInteger(0, prefix + "BG", OBJPROP_BGCOLOR, DashboardBGColor);
     ObjectSetInteger(0, prefix + "BG", OBJPROP_BORDER_TYPE, BORDER_FLAT);
     ObjectSetInteger(0, prefix + "BG", OBJPROP_CORNER, CORNER_LEFT_UPPER);
@@ -1039,18 +1367,19 @@ void CreateDashboard()
     CreateLabel(prefix + "H1Zones", "H1 Zones: 0", DashboardX + 10, DashboardY + 85, 9, DashboardTextColor);
     CreateLabel(prefix + "OrderBlocks", "Order Blocks: 0", DashboardX + 10, DashboardY + 110, 9, DashboardTextColor);
     CreateLabel(prefix + "FVGs", "Fair Value Gaps: 0", DashboardX + 10, DashboardY + 135, 9, DashboardTextColor);
-    CreateLabel(prefix + "Validation", "Entry Validation: 0/9", DashboardX + 10, DashboardY + 160, 9, DashboardTextColor);
-    CreateLabel(prefix + "Points", "Points Met: None", DashboardX + 10, DashboardY + 185, 8, clrYellow);
-    CreateLabel(prefix + "Session", "Session: Closed", DashboardX + 10, DashboardY + 210, 9, DashboardTextColor);
-    CreateLabel(prefix + "Balance", "Balance: 0.00", DashboardX + 10, DashboardY + 240, 9, DashboardTextColor);
-    CreateLabel(prefix + "DailyPL", "Daily P/L: 0.00", DashboardX + 10, DashboardY + 265, 9, DashboardTextColor);
-    CreateLabel(prefix + "Trades", "Trades: 0", DashboardX + 10, DashboardY + 290, 9, DashboardTextColor);
-    CreateLabel(prefix + "Positions", "Open Positions: 0", DashboardX + 10, DashboardY + 315, 9, DashboardTextColor);
-    CreateLabel(prefix + "ATRH4", "ATR H4: 0.00", DashboardX + 10, DashboardY + 345, 8, DashboardTextColor);
-    CreateLabel(prefix + "ATRH1", "ATR H1: 0.00", DashboardX + 10, DashboardY + 370, 8, DashboardTextColor);
-    CreateLabel(prefix + "ATRM5", "ATR M5: 0.00", DashboardX + 10, DashboardY + 395, 8, DashboardTextColor);
-    CreateLabel(prefix + "Status", "Status: Active", DashboardX + 10, DashboardY + 420, 9, clrLime);
-    CreateLabel(prefix + "Error", "", DashboardX + 10, DashboardY + 445, 7, clrRed);
+    CreateLabel(prefix + "AsianLevels", "Asian High/Low: N/A", DashboardX + 10, DashboardY + 160, 9, DashboardTextColor);
+    CreateLabel(prefix + "Validation", "Entry Validation: 0/11", DashboardX + 10, DashboardY + 185, 9, DashboardTextColor);
+    CreateLabel(prefix + "Points", "Points Met: None", DashboardX + 10, DashboardY + 210, 8, clrYellow);
+    CreateLabel(prefix + "Session", "Session: Closed", DashboardX + 10, DashboardY + 235, 9, DashboardTextColor);
+    CreateLabel(prefix + "Balance", "Balance: 0.00", DashboardX + 10, DashboardY + 265, 9, DashboardTextColor);
+    CreateLabel(prefix + "DailyPL", "Daily P/L: 0.00", DashboardX + 10, DashboardY + 290, 9, DashboardTextColor);
+    CreateLabel(prefix + "Trades", "Trades: 0", DashboardX + 10, DashboardY + 315, 9, DashboardTextColor);
+    CreateLabel(prefix + "Positions", "Open Positions: 0", DashboardX + 10, DashboardY + 340, 9, DashboardTextColor);
+    CreateLabel(prefix + "ATRH4", "ATR H4: 0.00", DashboardX + 10, DashboardY + 370, 8, DashboardTextColor);
+    CreateLabel(prefix + "ATRH1", "ATR H1: 0.00", DashboardX + 10, DashboardY + 395, 8, DashboardTextColor);
+    CreateLabel(prefix + "ATRM5", "ATR M5: 0.00", DashboardX + 10, DashboardY + 420, 8, DashboardTextColor);
+    CreateLabel(prefix + "Status", "Status: Active", DashboardX + 10, DashboardY + 445, 9, clrLime);
+    CreateLabel(prefix + "Error", "", DashboardX + 10, DashboardY + 470, 7, clrRed);
 }
 
 //+------------------------------------------------------------------+
@@ -1109,9 +1438,17 @@ void UpdateDashboard()
     ObjectSetString(0, prefix + "FVGs", OBJPROP_TEXT, 
                     StringFormat("Fair Value Gaps: %d", ArraySize(h1FVGs)));
     
+    // Asian Levels
+    string asianText = "Asian High/Low: ";
+    if(asianLevels.isValid)
+        asianText += StringFormat("H:%.2f L:%.2f", asianLevels.high, asianLevels.low);
+    else
+        asianText += "N/A";
+    ObjectSetString(0, prefix + "AsianLevels", OBJPROP_TEXT, asianText);
+    
     // Validation
     ObjectSetString(0, prefix + "Validation", OBJPROP_TEXT, 
-                    StringFormat("Entry Validation: %d/9", currentValidation.totalPoints));
+                    StringFormat("Entry Validation: %d/11", currentValidation.totalPoints));
     
     // Validation Points Details
     string pointsText = "Points: ";
@@ -1122,6 +1459,8 @@ void UpdateDashboard()
     if(currentValidation.fvgPresent) pointsText += "FVG ";
     if(currentValidation.orderBlockValid) pointsText += "OB ";
     if(currentValidation.atrZoneValid) pointsText += "ATR ";
+    if(currentValidation.breakoutDetected) pointsText += "Breakout ";
+    if(currentValidation.asianLevelValid) pointsText += "Asian ";
     if(currentValidation.sessionActive) pointsText += "Session";
     
     if(currentValidation.totalPoints == 0) pointsText = "Points: None";
@@ -1129,8 +1468,13 @@ void UpdateDashboard()
     ObjectSetString(0, prefix + "Points", OBJPROP_TEXT, pointsText);
     
     // Session
-    string sessionText = IsWithinTradingSession() ? "Session: ACTIVE" : "Session: CLOSED";
-    color sessionColor = IsWithinTradingSession() ? clrLime : clrOrange;
+    string sessionText = "Session: ";
+    if(currentSession == SESSION_ASIAN) sessionText += "ASIAN";
+    else if(currentSession == SESSION_LONDON) sessionText += "LONDON";
+    else if(currentSession == SESSION_NEWYORK) sessionText += "NEW YORK";
+    else sessionText += "CLOSED";
+    
+    color sessionColor = (currentSession != SESSION_NONE) ? clrLime : clrOrange;
     ObjectSetString(0, prefix + "Session", OBJPROP_TEXT, sessionText);
     ObjectSetInteger(0, prefix + "Session", OBJPROP_COLOR, sessionColor);
     
@@ -1185,6 +1529,7 @@ void DeleteDashboard()
     ObjectDelete(0, prefix + "H1Zones");
     ObjectDelete(0, prefix + "OrderBlocks");
     ObjectDelete(0, prefix + "FVGs");
+    ObjectDelete(0, prefix + "AsianLevels");
     ObjectDelete(0, prefix + "Validation");
     ObjectDelete(0, prefix + "Points");
     ObjectDelete(0, prefix + "Session");
