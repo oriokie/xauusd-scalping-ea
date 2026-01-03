@@ -32,6 +32,13 @@ input double RiskPercentage = 1.0;                 // Risk per trade (%)
 input double MaxDailyLossPercent = 3.0;            // Maximum daily loss (%)
 input double MinRiskRewardRatio = 2.5;             // Minimum Risk/Reward Ratio
 input int MaxPositions = 1;                        // Maximum concurrent positions
+input bool UseDynamicRR = false;                   // Use dynamic R:R based on volatility
+input double DynamicRR_Multiplier = 1.0;           // Dynamic R:R volatility multiplier
+input bool UsePartialPositions = false;            // Use partial position scaling
+input double PartialEntry_Percent = 50.0;          // Initial position size (% of full size)
+input int MaxHoldingTimeBars = 0;                  // Max holding time in bars (0 = no limit)
+input bool UseTimeBasedExit = false;               // Enable time-based exit
+input int TimeBasedExit_Bars = 100;                // Exit if no movement after X bars
 
 //--- ATR Settings
 input group "=== ATR Settings ==="
@@ -101,6 +108,15 @@ input group "=== H4 Trend Detection ==="
 enum TREND_MODE { TREND_STRICT, TREND_SIMPLE };
 input TREND_MODE H4TrendMode = TREND_SIMPLE;       // H4 Trend Detection Mode (SIMPLE recommended)
 input bool AllowWeakTrend = true;                  // Allow trades in weak trend conditions
+
+//--- Additional Filters
+input group "=== Additional Filters ==="
+input bool UseSpreadFilter = true;                 // Enable spread filter
+input double MaxSpreadPoints = 30.0;               // Maximum allowed spread in points
+input bool UseNewsFilter = false;                  // Enable news filter (placeholder for future)
+input bool UseTimeOfDayFilter = false;             // Enable time-of-day performance filter
+input int AvoidTradingHourStart = 22;              // Avoid trading start hour (GMT)
+input int AvoidTradingHourEnd = 1;                 // Avoid trading end hour (GMT)
 
 //--- Dashboard Settings
 input group "=== Dashboard Settings ==="
@@ -822,13 +838,53 @@ void DetectH1FairValueGaps()
 }
 
 //+------------------------------------------------------------------+
-//| Analyze entry opportunity with 9-point validation                |
+//| Analyze entry opportunity with 11-point validation                |
 //+------------------------------------------------------------------+
 int AnalyzeEntryOpportunity()
 {
     // Reset validation
     ZeroMemory(currentValidation);
     currentValidation.totalPoints = 0;
+    
+    // Early filter: Spread check
+    if(UseSpreadFilter)
+    {
+        double spread = SymbolInfoInteger(_Symbol, SYMBOL_SPREAD) * SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+        double spreadPoints = spread / SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+        if(spreadPoints > MaxSpreadPoints)
+        {
+            lastErrorMsg = StringFormat("Spread too high: %.1f points (max: %.1f)", spreadPoints, MaxSpreadPoints);
+            return 0;
+        }
+    }
+    
+    // Early filter: Time-of-day filter
+    if(UseTimeOfDayFilter)
+    {
+        MqlDateTime dt;
+        TimeToStruct(TimeGMT() + SessionGMTOffset * 3600, dt);
+        int currentHour = dt.hour;
+        
+        // Check if we're in the avoid trading hours
+        if(AvoidTradingHourEnd > AvoidTradingHourStart)
+        {
+            // Normal range (e.g., 22-1 next day)
+            if(currentHour >= AvoidTradingHourStart || currentHour <= AvoidTradingHourEnd)
+            {
+                lastErrorMsg = StringFormat("Time-of-day filter: avoiding trading at %02d:00 GMT", currentHour);
+                return 0;
+            }
+        }
+        else
+        {
+            // Wrapped range (e.g., 8-17)
+            if(currentHour >= AvoidTradingHourStart && currentHour <= AvoidTradingHourEnd)
+            {
+                lastErrorMsg = StringFormat("Time-of-day filter: avoiding trading at %02d:00 GMT", currentHour);
+                return 0;
+            }
+        }
+    }
     
     // Early filter: Check volatility conditions
     if(!IsVolatilityAcceptable())
@@ -1488,6 +1544,14 @@ void ExecuteBuyOrder()
     double slDistance = atrM5[0] * ATR_StopLossMultiplier;
     double tpDistance = atrM5[0] * ATR_TakeProfitMultiplier;
     
+    // Apply dynamic R:R if enabled
+    if(UseDynamicRR)
+    {
+        double avgATR = (atrH4[0] + atrH1[0] + atrM5[0]) / 3.0;
+        double volatilityRatio = atrM5[0] / avgATR;
+        tpDistance = atrM5[0] * ATR_TakeProfitMultiplier * volatilityRatio * DynamicRR_Multiplier;
+    }
+    
     // Check for swing point SL
     double swingPointSL = FindSwingPointSL(true, ask);
     if(swingPointSL > 0.0)
@@ -1512,6 +1576,12 @@ void ExecuteBuyOrder()
     double slPoints = slDistance / point;
     double lotSize = CalculateLotSize(slPoints);
     
+    // Apply partial position scaling if enabled
+    if(UsePartialPositions)
+    {
+        lotSize = lotSize * (PartialEntry_Percent / 100.0);
+    }
+    
     if(lotSize < SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN))
     {
         lastErrorMsg = "Lot size too small";
@@ -1521,7 +1591,11 @@ void ExecuteBuyOrder()
     // Execute trade
     trade.SetDeviationInPoints(10);
     
-    if(trade.Buy(lotSize, _Symbol, ask, sl, tp, "Simba Sniper Buy"))
+    string comment = "Simba Sniper Buy";
+    if(UsePartialPositions)
+        comment += StringFormat(" (%.0f%%)", PartialEntry_Percent);
+    
+    if(trade.Buy(lotSize, _Symbol, ask, sl, tp, comment))
     {
         dailyTrades++;
         Print(StringFormat("BUY order executed at %.2f, SL: %.2f, TP: %.2f, Lot: %.2f, Validation: %d/11", 
@@ -1545,6 +1619,14 @@ void ExecuteSellOrder()
     // Calculate initial SL and TP
     double slDistance = atrM5[0] * ATR_StopLossMultiplier;
     double tpDistance = atrM5[0] * ATR_TakeProfitMultiplier;
+    
+    // Apply dynamic R:R if enabled
+    if(UseDynamicRR)
+    {
+        double avgATR = (atrH4[0] + atrH1[0] + atrM5[0]) / 3.0;
+        double volatilityRatio = atrM5[0] / avgATR;
+        tpDistance = atrM5[0] * ATR_TakeProfitMultiplier * volatilityRatio * DynamicRR_Multiplier;
+    }
     
     // Check for swing point SL
     double swingPointSL = FindSwingPointSL(false, bid);
@@ -1570,6 +1652,12 @@ void ExecuteSellOrder()
     double slPoints = slDistance / point;
     double lotSize = CalculateLotSize(slPoints);
     
+    // Apply partial position scaling if enabled
+    if(UsePartialPositions)
+    {
+        lotSize = lotSize * (PartialEntry_Percent / 100.0);
+    }
+    
     if(lotSize < SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN))
     {
         lastErrorMsg = "Lot size too small";
@@ -1579,7 +1667,11 @@ void ExecuteSellOrder()
     // Execute trade
     trade.SetDeviationInPoints(10);
     
-    if(trade.Sell(lotSize, _Symbol, bid, sl, tp, "Simba Sniper Sell"))
+    string comment = "Simba Sniper Sell";
+    if(UsePartialPositions)
+        comment += StringFormat(" (%.0f%%)", PartialEntry_Percent);
+    
+    if(trade.Sell(lotSize, _Symbol, bid, sl, tp, comment))
     {
         dailyTrades++;
         Print(StringFormat("SELL order executed at %.2f, SL: %.2f, TP: %.2f, Lot: %.2f, Validation: %d/11", 
@@ -1600,6 +1692,18 @@ double CalculatePotentialRR(bool isBuySignal)
     double currentPrice;
     double slDistance = atrM5[0] * ATR_StopLossMultiplier;
     double tpDistance = atrM5[0] * ATR_TakeProfitMultiplier;
+    
+    // Apply dynamic R:R based on volatility if enabled
+    if(UseDynamicRR)
+    {
+        // Calculate volatility ratio (current ATR vs average)
+        double avgATR = (atrH4[0] + atrH1[0] + atrM5[0]) / 3.0;
+        double volatilityRatio = atrM5[0] / avgATR;
+        
+        // Adjust TP distance based on volatility
+        // Higher volatility = wider targets
+        tpDistance = atrM5[0] * ATR_TakeProfitMultiplier * volatilityRatio * DynamicRR_Multiplier;
+    }
     
     if(isBuySignal)
     {
