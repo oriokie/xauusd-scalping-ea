@@ -116,7 +116,7 @@ input bool ShowValidationDetails = true;           // Show validation details on
 
 //--- Entry Validation (11-Point System) - UPDATED for better trade execution
 input group "=== 11-Point Entry Validation ==="
-input int MinValidationPoints = 6;                 // Minimum validation points required (increased for better entry quality)
+input int MinValidationPoints = 6;                 // Minimum validation points required (can be weighted or traditional points)
 input bool UseWeightedScoring = true;              // Use weighted validation scoring (recommended)
 input double H4TrendWeight = 3.0;                  // H4 Trend weight multiplier (CRITICAL)
 input double RiskRewardWeight = 2.0;               // Risk/Reward weight multiplier (IMPORTANT)
