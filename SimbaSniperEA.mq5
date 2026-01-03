@@ -877,12 +877,38 @@ int AnalyzeEntryOpportunity()
         // In Asian session, favor range-bound setups, avoid breakouts
         if(currentValidation.breakoutDetected)
             return 0; // Skip breakout trades during Asian session
+        
+        // Only trade reversals from Asian high/low
+        if(!currentValidation.asianLevelValid)
+        {
+            lastErrorMsg = "Asian session requires valid Asian level proximity";
+            return 0;
+        }
+        
+        // Must show rejection (wick) from level
+        if(!DetectRejectionFromLevel())
+        {
+            lastErrorMsg = "Asian session requires rejection from level";
+            return 0;
+        }
     }
     
     if(LondonNYBreakout && (currentSession == SESSION_LONDON || currentSession == SESSION_NEWYORK))
     {
         // In London/NY sessions, favor breakout patterns
-        // Breakout detection adds to validation points
+        // Require strong breakout confirmation
+        if(!currentValidation.breakoutDetected)
+        {
+            lastErrorMsg = "London/NY session requires breakout confirmation";
+            return 0;
+        }
+        
+        // Must have volume expansion (use tick volume)
+        if(!CheckVolumeExpansion())
+        {
+            lastErrorMsg = "London/NY session requires volume expansion";
+            return 0;
+        }
     }
     
     // Check if minimum validation points met
@@ -1112,6 +1138,88 @@ bool IsMarketStructureClean()
     }
         
     return true;
+}
+
+//+------------------------------------------------------------------+
+//| Detect rejection from key levels (Asian high/low, zones)        |
+//+------------------------------------------------------------------+
+bool DetectRejectionFromLevel()
+{
+    if(Bars(_Symbol, M5_Timeframe) < 3)
+        return false;
+    
+    double currentPrice = (SymbolInfoDouble(_Symbol, SYMBOL_BID) + 
+                          SymbolInfoDouble(_Symbol, SYMBOL_ASK)) / 2.0;
+    
+    // Check recent candles for wick rejection pattern
+    for(int i = 0; i < 3; i++)
+    {
+        double open = iOpen(_Symbol, M5_Timeframe, i);
+        double close = iClose(_Symbol, M5_Timeframe, i);
+        double high = iHigh(_Symbol, M5_Timeframe, i);
+        double low = iLow(_Symbol, M5_Timeframe, i);
+        
+        double bodySize = MathAbs(close - open);
+        double upperWick = high - MathMax(open, close);
+        double lowerWick = MathMin(open, close) - low;
+        
+        // Bullish rejection: large lower wick (at least 2x body size)
+        bool bullishRejection = (lowerWick > bodySize * 2.0) && 
+                                (lowerWick > atrM5[0] * 0.3);
+        
+        // Bearish rejection: large upper wick (at least 2x body size)
+        bool bearishRejection = (upperWick > bodySize * 2.0) && 
+                                (upperWick > atrM5[0] * 0.3);
+        
+        // Check if rejection occurred near a level
+        if(bullishRejection || bearishRejection)
+        {
+            // Check Asian levels
+            if(UseAsianHighLow && asianLevels.isValid)
+            {
+                double distanceToHigh = MathAbs(low - asianLevels.high);
+                double distanceToLow = MathAbs(low - asianLevels.low);
+                
+                if(distanceToHigh < atrM5[0] * 0.5 || distanceToLow < atrM5[0] * 0.5)
+                    return true;
+            }
+            
+            // Check H1 zones
+            for(int j = 0; j < ArraySize(h1Zones); j++)
+            {
+                double distanceToZone = MathAbs(low - h1Zones[j].level);
+                if(distanceToZone < atrM5[0] * 0.5)
+                    return true;
+            }
+        }
+    }
+    
+    return false;
+}
+
+//+------------------------------------------------------------------+
+//| Check for volume expansion (using tick volume)                   |
+//+------------------------------------------------------------------+
+bool CheckVolumeExpansion()
+{
+    if(Bars(_Symbol, M5_Timeframe) < 5)
+        return false;
+    
+    // Get recent tick volumes
+    long currentVolume = iVolume(_Symbol, M5_Timeframe, 0);
+    long prevVolume1 = iVolume(_Symbol, M5_Timeframe, 1);
+    long prevVolume2 = iVolume(_Symbol, M5_Timeframe, 2);
+    long prevVolume3 = iVolume(_Symbol, M5_Timeframe, 3);
+    long prevVolume4 = iVolume(_Symbol, M5_Timeframe, 4);
+    
+    // Calculate average volume
+    long avgVolume = (prevVolume1 + prevVolume2 + prevVolume3 + prevVolume4) / 4;
+    
+    // Volume expansion: current volume is at least 150% of average
+    if(currentVolume > avgVolume * 1.5)
+        return true;
+    
+    return false;
 }
 
 //+------------------------------------------------------------------+
