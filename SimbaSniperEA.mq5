@@ -960,11 +960,11 @@ int AnalyzeBOSStrategy()
     if(Bars(_Symbol, M5_Timeframe) < 10)
         return 0;
     
-    // Get recent swing points on M5
-    double swingHigh = 0.0;
-    double swingLow = PRICE_UNSET;
+    // Get recent swing points on M5 - initialize with first values
+    double swingHigh = iHigh(_Symbol, M5_Timeframe, 2);
+    double swingLow = iLow(_Symbol, M5_Timeframe, 2);
     
-    for(int i = 2; i < SwingLookback; i++)
+    for(int i = 3; i < SwingLookback; i++)
     {
         double high = iHigh(_Symbol, M5_Timeframe, i);
         double low = iLow(_Symbol, M5_Timeframe, i);
