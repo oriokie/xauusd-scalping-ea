@@ -30,15 +30,15 @@ input bool UseM1Precision = false;                 // Use M1 for precision entri
 input group "=== Risk Management ==="
 input double RiskPercentage = 1.0;                 // Risk per trade (%)
 input double MaxDailyLossPercent = 3.0;            // Maximum daily loss (%)
-input double MinRiskRewardRatio = 2.0;             // Minimum Risk/Reward Ratio
+input double MinRiskRewardRatio = 2.5;             // Minimum Risk/Reward Ratio
 input int MaxPositions = 1;                        // Maximum concurrent positions
 
 //--- ATR Settings
 input group "=== ATR Settings ==="
 input int ATR_Period = 14;                         // ATR Period
 input double ATR_ZoneMultiplier = 1.5;             // ATR multiplier for zone validation
-input double ATR_StopLossMultiplier = 1.5;         // Stop Loss ATR Multiplier
-input double ATR_TakeProfitMultiplier = 3.0;       // Take Profit ATR Multiplier
+input double ATR_StopLossMultiplier = 2.0;         // Stop Loss ATR Multiplier
+input double ATR_TakeProfitMultiplier = 4.0;       // Take Profit ATR Multiplier
 input double ATR_BreakoutMultiplier = 1.5;         // Breakout detection ATR multiplier
 
 //--- Structure Detection Settings
@@ -50,19 +50,21 @@ input int FVG_MinGapPoints = 20;                   // Minimum FVG gap in points
 input bool UseSwingPointSL = true;                 // Use swing points for stop-loss
 input bool UseBreakEvenStop = true;                // Enable break-even stop-loss
 input double BreakEvenTriggerRatio = 0.5;          // Break-even trigger (ratio of TP distance)
+input bool UseTrailingStop = true;                 // Enable trailing stop-loss
+input double TrailingStopATRMultiplier = 1.0;      // Trailing stop ATR multiplier
 
 //--- Entry Validation (9-Point System)
 input group "=== 9-Point Entry Validation ==="
 input bool Require_H4_Trend = true;                // 1. H4 Trend Alignment
 input bool Require_H1_Zone = true;                 // 2. H1 Zone Present
 input bool Require_BOS = true;                     // 3. Break of Structure
-input bool Require_LiquiditySweep = false;         // 4. Liquidity Sweep (Optional)
-input bool Require_FVG = false;                    // 5. Fair Value Gap (Optional)
+input bool Require_LiquiditySweep = true;         // 4. Liquidity Sweep (Optional)
+input bool Require_FVG = true;                    // 5. Fair Value Gap (Optional)
 input bool Require_OrderBlock = true;              // 6. Order Block Confirmation
 input bool Require_ATR_Zone = true;                // 7. ATR Zone Validation
 input bool Require_ValidRR = true;                 // 8. Valid Risk/Reward
 input bool Require_SessionFilter = true;           // 9. Trading Session Active
-input int MinValidationPoints = 6;                 // Minimum validation points required (out of 9)
+input int MinValidationPoints = 7;                 // Minimum validation points required (out of 9)
 
 //--- Trading Sessions
 input group "=== Trading Sessions ==="
@@ -100,6 +102,10 @@ CAccountInfo accountInfo;
 // ATR Handles for each timeframe
 int atrH4Handle, atrH1Handle, atrM5Handle, atrM1Handle;
 double atrH4[], atrH1[], atrM5[], atrM1[];
+
+// EMA Handles for trend confirmation
+int ema20H4Handle, ema50H4Handle;
+double ema20H4[], ema50H4[];
 
 // Market Structure Variables
 enum TREND_DIRECTION { TREND_BULLISH, TREND_BEARISH, TREND_NEUTRAL };
@@ -202,10 +208,15 @@ int OnInit()
     if(UseM1Precision)
         atrM1Handle = iATR(_Symbol, M1_Timeframe, ATR_Period);
     
+    // Initialize EMA indicators for H4 trend confirmation
+    ema20H4Handle = iMA(_Symbol, H4_Timeframe, 20, 0, MODE_EMA, PRICE_CLOSE);
+    ema50H4Handle = iMA(_Symbol, H4_Timeframe, 50, 0, MODE_EMA, PRICE_CLOSE);
+    
     if(atrH4Handle == INVALID_HANDLE || atrH1Handle == INVALID_HANDLE || 
-       atrM5Handle == INVALID_HANDLE)
+       atrM5Handle == INVALID_HANDLE || ema20H4Handle == INVALID_HANDLE || 
+       ema50H4Handle == INVALID_HANDLE)
     {
-        Print("Error creating ATR indicators");
+        Print("Error creating indicators");
         return(INIT_FAILED);
     }
     
@@ -213,6 +224,8 @@ int OnInit()
     ArraySetAsSeries(atrH4, true);
     ArraySetAsSeries(atrH1, true);
     ArraySetAsSeries(atrM5, true);
+    ArraySetAsSeries(ema20H4, true);
+    ArraySetAsSeries(ema50H4, true);
     if(UseM1Precision) ArraySetAsSeries(atrM1, true);
     
     // Initialize arrays
@@ -251,6 +264,8 @@ void OnDeinit(const int reason)
     IndicatorRelease(atrH4Handle);
     IndicatorRelease(atrH1Handle);
     IndicatorRelease(atrM5Handle);
+    IndicatorRelease(ema20H4Handle);
+    IndicatorRelease(ema50H4Handle);
     if(UseM1Precision) IndicatorRelease(atrM1Handle);
     
     // Remove dashboard
@@ -349,6 +364,19 @@ bool UpdateATRBuffers()
         return false;
     }
     
+    // Copy EMA buffers for trend confirmation
+    if(CopyBuffer(ema20H4Handle, 0, 0, 3, ema20H4) <= 0)
+    {
+        lastErrorMsg = "Failed to copy EMA20 H4 data";
+        return false;
+    }
+    
+    if(CopyBuffer(ema50H4Handle, 0, 0, 3, ema50H4) <= 0)
+    {
+        lastErrorMsg = "Failed to copy EMA50 H4 data";
+        return false;
+    }
+    
     lastErrorMsg = "";
     return true;
 }
@@ -437,6 +465,28 @@ void AnalyzeH4Trend()
             h4Trend = TREND_BEARISH;
         else
             h4Trend = TREND_NEUTRAL;
+    }
+    
+    // Confirm trend with EMA alignment
+    double currentClose = iClose(_Symbol, H4_Timeframe, 0);
+    
+    // For bullish trend: price > EMA20 > EMA50
+    if(h4Trend == TREND_BULLISH)
+    {
+        if(!(currentClose > ema20H4[0] && ema20H4[0] > ema50H4[0]))
+        {
+            h4Trend = TREND_NEUTRAL;
+            lastErrorMsg = "H4 bullish swing structure but EMA not aligned";
+        }
+    }
+    // For bearish trend: price < EMA20 < EMA50
+    else if(h4Trend == TREND_BEARISH)
+    {
+        if(!(currentClose < ema20H4[0] && ema20H4[0] < ema50H4[0]))
+        {
+            h4Trend = TREND_NEUTRAL;
+            lastErrorMsg = "H4 bearish swing structure but EMA not aligned";
+        }
     }
     
     // Check for displacement (strong directional move)
@@ -557,37 +607,83 @@ void DetectH1OrderBlocks()
     if(Bars(_Symbol, H1_Timeframe) < OrderBlockBars + 5)
         return;
     
-    // Look for order blocks in recent bars
-    for(int i = 2; i < 20; i++)
+    // Look for order blocks in recent bars with enhanced logic
+    for(int i = 3; i < 20; i++)
     {
+        double close3 = iClose(_Symbol, H1_Timeframe, i+2);
+        double close2 = iClose(_Symbol, H1_Timeframe, i+1);
         double close1 = iClose(_Symbol, H1_Timeframe, i);
+        double close0 = iClose(_Symbol, H1_Timeframe, i-1);
+        
         double open1 = iOpen(_Symbol, H1_Timeframe, i);
         double high1 = iHigh(_Symbol, H1_Timeframe, i);
         double low1 = iLow(_Symbol, H1_Timeframe, i);
         
-        double close0 = iClose(_Symbol, H1_Timeframe, i-1);
-        double open0 = iOpen(_Symbol, H1_Timeframe, i-1);
+        // Bullish OB: Strong down move, then reversal candle, then sustained up
+        bool bullishOB = (close2 < close3) &&              // Down move before
+                         (close1 < open1) &&                // Bearish candle (last down)
+                         (close0 > high1) &&                // Break above OB
+                         (close0 - close1) > atrH1[0] * 0.8; // Strong move
         
-        // Bullish Order Block: Down candle followed by strong up move
-        bool bullishOB = (close1 < open1) && (close0 > close1) && 
-                         (close0 - open0) > atrH1[0] * 0.5;
+        // Bearish OB: Strong up move, then reversal candle, then sustained down
+        bool bearishOB = (close2 > close3) &&              // Up move before
+                         (close1 > open1) &&                // Bullish candle (last up)
+                         (close0 < low1) &&                 // Break below OB
+                         (close1 - close0) > atrH1[0] * 0.8; // Strong move
         
-        // Bearish Order Block: Up candle followed by strong down move
-        bool bearishOB = (close1 > open1) && (close0 < close1) && 
-                         (open0 - close0) > atrH1[0] * 0.5;
-        
-        if(bullishOB || bearishOB)
+        if(bullishOB)
         {
             OrderBlock ob;
             ob.time = iTime(_Symbol, H1_Timeframe, i);
             ob.high = high1;
             ob.low = low1;
-            ob.isBullish = bullishOB;
+            ob.isBullish = true;
             ob.isValid = true;
             
-            int size = ArraySize(h1OrderBlocks);
-            ArrayResize(h1OrderBlocks, size + 1);
-            h1OrderBlocks[size] = ob;
+            // Check if OB hasn't been violated (price didn't go below low)
+            bool violated = false;
+            for(int j = i-1; j >= 0; j--)
+            {
+                if(iLow(_Symbol, H1_Timeframe, j) < low1)
+                {
+                    violated = true;
+                    break;
+                }
+            }
+            
+            if(!violated)
+            {
+                int size = ArraySize(h1OrderBlocks);
+                ArrayResize(h1OrderBlocks, size + 1);
+                h1OrderBlocks[size] = ob;
+            }
+        }
+        else if(bearishOB)
+        {
+            OrderBlock ob;
+            ob.time = iTime(_Symbol, H1_Timeframe, i);
+            ob.high = high1;
+            ob.low = low1;
+            ob.isBullish = false;
+            ob.isValid = true;
+            
+            // Check if OB hasn't been violated (price didn't go above high)
+            bool violated = false;
+            for(int j = i-1; j >= 0; j--)
+            {
+                if(iHigh(_Symbol, H1_Timeframe, j) > high1)
+                {
+                    violated = true;
+                    break;
+                }
+            }
+            
+            if(!violated)
+            {
+                int size = ArraySize(h1OrderBlocks);
+                ArrayResize(h1OrderBlocks, size + 1);
+                h1OrderBlocks[size] = ob;
+            }
         }
     }
 }
@@ -657,6 +753,20 @@ int AnalyzeEntryOpportunity()
     // Reset validation
     ZeroMemory(currentValidation);
     currentValidation.totalPoints = 0;
+    
+    // Early filter: Check volatility conditions
+    if(!IsVolatilityAcceptable())
+    {
+        lastErrorMsg = "Volatility outside acceptable range";
+        return 0;
+    }
+    
+    // Early filter: Check market structure
+    if(!IsMarketStructureClean())
+    {
+        // lastErrorMsg already set in IsMarketStructureClean
+        return 0;
+    }
     
     // 1. H4 Trend Alignment
     if(h4Trend == TREND_BULLISH || h4Trend == TREND_BEARISH)
@@ -747,9 +857,14 @@ int AnalyzeEntryOpportunity()
         }
     }
     
-    // 10. Valid Risk/Reward
-    currentValidation.validRiskReward = true; // Will be validated in order execution
-    currentValidation.totalPoints++;
+    // 10. Valid Risk/Reward - Calculate actual potential R:R
+    bool isBuySignal = (h4Trend == TREND_BULLISH);
+    double potentialRR = CalculatePotentialRR(isBuySignal);
+    if(potentialRR >= MinRiskRewardRatio)
+    {
+        currentValidation.validRiskReward = true;
+        currentValidation.totalPoints++;
+    }
     
     // 11. Session Filter
     currentValidation.sessionActive = IsWithinTradingSession();
@@ -762,12 +877,38 @@ int AnalyzeEntryOpportunity()
         // In Asian session, favor range-bound setups, avoid breakouts
         if(currentValidation.breakoutDetected)
             return 0; // Skip breakout trades during Asian session
+        
+        // Only trade reversals from Asian high/low
+        if(!currentValidation.asianLevelValid)
+        {
+            lastErrorMsg = "Asian session requires valid Asian level proximity";
+            return 0;
+        }
+        
+        // Must show rejection (wick) from level
+        if(!DetectRejectionFromLevel())
+        {
+            lastErrorMsg = "Asian session requires rejection from level";
+            return 0;
+        }
     }
     
     if(LondonNYBreakout && (currentSession == SESSION_LONDON || currentSession == SESSION_NEWYORK))
     {
         // In London/NY sessions, favor breakout patterns
-        // Breakout detection adds to validation points
+        // Require strong breakout confirmation
+        if(!currentValidation.breakoutDetected)
+        {
+            lastErrorMsg = "London/NY session requires breakout confirmation";
+            return 0;
+        }
+        
+        // Must have volume expansion (use tick volume)
+        if(!CheckVolumeExpansion())
+        {
+            lastErrorMsg = "London/NY session requires volume expansion";
+            return 0;
+        }
     }
     
     // Check if minimum validation points met
@@ -941,6 +1082,142 @@ bool ValidateATRZone()
         if(distance <= atrH1[0] * ATR_ZoneMultiplier)
             return true;
     }
+    
+    return false;
+}
+
+//+------------------------------------------------------------------+
+//| Check if volatility is within acceptable range                   |
+//+------------------------------------------------------------------+
+bool IsVolatilityAcceptable()
+{
+    // Ensure we have enough ATR data
+    if(ArraySize(atrH1) < 3)
+        return true; // Default to true if not enough data
+    
+    double currentATR = atrH1[0];
+    double avgATR = (atrH1[0] + atrH1[1] + atrH1[2]) / 3.0;
+    
+    // Avoid if ATR is too high (>150% average) or too low (<50% average)
+    if(currentATR > avgATR * 1.5 || currentATR < avgATR * 0.5)
+        return false;
+        
+    return true;
+}
+
+//+------------------------------------------------------------------+
+//| Check if market structure is clean for entry                     |
+//+------------------------------------------------------------------+
+bool IsMarketStructureClean()
+{
+    // Avoid entries during choppy consolidation
+    if(Bars(_Symbol, H1_Timeframe) < 20)
+        return false;
+    
+    // Find highest high and lowest low in recent H1 bars
+    int highestBar = iHighest(_Symbol, H1_Timeframe, MODE_HIGH, 20, 0);
+    int lowestBar = iLowest(_Symbol, H1_Timeframe, MODE_LOW, 20, 0);
+    
+    double highestHigh = iHigh(_Symbol, H1_Timeframe, highestBar);
+    double lowestLow = iLow(_Symbol, H1_Timeframe, lowestBar);
+    
+    double range = highestHigh - lowestLow;
+    
+    // Too narrow range indicates consolidation
+    if(range < atrH1[0] * 2.0)
+    {
+        lastErrorMsg = "Market structure too choppy - narrow range";
+        return false;
+    }
+    
+    // Check for multiple timeframe alignment
+    if(h4Trend == TREND_NEUTRAL)
+    {
+        lastErrorMsg = "H4 trend is neutral - no clear structure";
+        return false;
+    }
+        
+    return true;
+}
+
+//+------------------------------------------------------------------+
+//| Detect rejection from key levels (Asian high/low, zones)        |
+//+------------------------------------------------------------------+
+bool DetectRejectionFromLevel()
+{
+    if(Bars(_Symbol, M5_Timeframe) < 3)
+        return false;
+    
+    double currentPrice = (SymbolInfoDouble(_Symbol, SYMBOL_BID) + 
+                          SymbolInfoDouble(_Symbol, SYMBOL_ASK)) / 2.0;
+    
+    // Check recent candles for wick rejection pattern
+    for(int i = 0; i < 3; i++)
+    {
+        double open = iOpen(_Symbol, M5_Timeframe, i);
+        double close = iClose(_Symbol, M5_Timeframe, i);
+        double high = iHigh(_Symbol, M5_Timeframe, i);
+        double low = iLow(_Symbol, M5_Timeframe, i);
+        
+        double bodySize = MathAbs(close - open);
+        double upperWick = high - MathMax(open, close);
+        double lowerWick = MathMin(open, close) - low;
+        
+        // Bullish rejection: large lower wick (at least 2x body size)
+        bool bullishRejection = (lowerWick > bodySize * 2.0) && 
+                                (lowerWick > atrM5[0] * 0.3);
+        
+        // Bearish rejection: large upper wick (at least 2x body size)
+        bool bearishRejection = (upperWick > bodySize * 2.0) && 
+                                (upperWick > atrM5[0] * 0.3);
+        
+        // Check if rejection occurred near a level
+        if(bullishRejection || bearishRejection)
+        {
+            // Check Asian levels
+            if(UseAsianHighLow && asianLevels.isValid)
+            {
+                double distanceToHigh = MathAbs(low - asianLevels.high);
+                double distanceToLow = MathAbs(low - asianLevels.low);
+                
+                if(distanceToHigh < atrM5[0] * 0.5 || distanceToLow < atrM5[0] * 0.5)
+                    return true;
+            }
+            
+            // Check H1 zones
+            for(int j = 0; j < ArraySize(h1Zones); j++)
+            {
+                double distanceToZone = MathAbs(low - h1Zones[j].level);
+                if(distanceToZone < atrM5[0] * 0.5)
+                    return true;
+            }
+        }
+    }
+    
+    return false;
+}
+
+//+------------------------------------------------------------------+
+//| Check for volume expansion (using tick volume)                   |
+//+------------------------------------------------------------------+
+bool CheckVolumeExpansion()
+{
+    if(Bars(_Symbol, M5_Timeframe) < 5)
+        return false;
+    
+    // Get recent tick volumes
+    long currentVolume = iVolume(_Symbol, M5_Timeframe, 0);
+    long prevVolume1 = iVolume(_Symbol, M5_Timeframe, 1);
+    long prevVolume2 = iVolume(_Symbol, M5_Timeframe, 2);
+    long prevVolume3 = iVolume(_Symbol, M5_Timeframe, 3);
+    long prevVolume4 = iVolume(_Symbol, M5_Timeframe, 4);
+    
+    // Calculate average volume
+    long avgVolume = (prevVolume1 + prevVolume2 + prevVolume3 + prevVolume4) / 4;
+    
+    // Volume expansion: current volume is at least 150% of average
+    if(currentVolume > avgVolume * 1.5)
+        return true;
     
     return false;
 }
@@ -1121,12 +1398,86 @@ void ExecuteSellOrder()
 }
 
 //+------------------------------------------------------------------+
+//| Calculate potential risk/reward ratio for entry validation       |
+//+------------------------------------------------------------------+
+double CalculatePotentialRR(bool isBuySignal)
+{
+    double currentPrice;
+    double slDistance = atrM5[0] * ATR_StopLossMultiplier;
+    double tpDistance = atrM5[0] * ATR_TakeProfitMultiplier;
+    
+    if(isBuySignal)
+    {
+        currentPrice = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+        
+        // Check for swing point SL
+        double swingPointSL = FindSwingPointSL(true, currentPrice);
+        if(swingPointSL > 0.0)
+        {
+            double swingDistance = currentPrice - swingPointSL;
+            // Use swing point if it provides better (wider) stop
+            if(swingDistance > slDistance && swingDistance < slDistance * 2.0)
+            {
+                slDistance = swingDistance;
+            }
+        }
+    }
+    else
+    {
+        currentPrice = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+        
+        // Check for swing point SL
+        double swingPointSL = FindSwingPointSL(false, currentPrice);
+        if(swingPointSL > 0.0)
+        {
+            double swingDistance = swingPointSL - currentPrice;
+            // Use swing point if it provides better (wider) stop
+            if(swingDistance > slDistance && swingDistance < slDistance * 2.0)
+            {
+                slDistance = swingDistance;
+            }
+        }
+    }
+    
+    // Ensure minimum RR ratio
+    if(tpDistance < slDistance * MinRiskRewardRatio)
+        tpDistance = slDistance * MinRiskRewardRatio;
+    
+    if(slDistance > 0)
+        return tpDistance / slDistance;
+    
+    return 0.0;
+}
+
+//+------------------------------------------------------------------+
+//| Calculate dynamic risk based on recent performance               |
+//+------------------------------------------------------------------+
+double CalculateDynamicRisk()
+{
+    // Need at least 3 trades for meaningful adjustment
+    if(dailyTrades < 3)
+        return RiskPercentage; // Not enough data
+    
+    double winRate = (double)dailyWins / dailyTrades;
+    
+    if(winRate < 0.4) // Losing streak
+        return RiskPercentage * 0.5; // Reduce risk by half
+    else if(winRate > 0.6) // Winning streak
+        return RiskPercentage * 1.2; // Increase risk by 20% (capped)
+    
+    return RiskPercentage;
+}
+
+//+------------------------------------------------------------------+
 //| Calculate lot size based on risk percentage                      |
 //+------------------------------------------------------------------+
 double CalculateLotSize(double stopLossPoints)
 {
     double balance = accountInfo.Balance();
-    double riskAmount = balance * (RiskPercentage / 100.0);
+    
+    // Use dynamic risk adjustment
+    double dynamicRisk = CalculateDynamicRisk();
+    double riskAmount = balance * (dynamicRisk / 100.0);
     
     double tickValue = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
     double tickSize = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
@@ -1192,12 +1543,49 @@ void ManageOpenPositions()
                     
                     // Move SL to break-even - small buffer when price reaches trigger
                     // Check if SL hasn't been moved to break-even yet
-                    if(currentPrice <= triggerPrice && (currentSL == 0 || currentSL > openPrice))
+                    if(currentPrice <= triggerPrice && currentSL > openPrice)
                     {
                         double newSL = openPrice - (atrM5[0] * 0.1); // Small buffer below entry
                         if(trade.PositionModify(positionInfo.Ticket(), newSL, currentTP))
                         {
                             Print(StringFormat("Break-even SL set for SELL #%d at %.2f", 
+                                  positionInfo.Ticket(), newSL));
+                        }
+                    }
+                }
+            }
+            
+            // Implement trailing stop-loss
+            if(UseTrailingStop)
+            {
+                double openPrice = positionInfo.PriceOpen();
+                double currentSL = positionInfo.StopLoss();
+                double currentTP = positionInfo.TakeProfit();
+                double currentPrice = positionInfo.PriceCurrent();
+                double trailingDistance = atrM5[0] * TrailingStopATRMultiplier;
+                
+                if(positionInfo.Type() == POSITION_TYPE_BUY)
+                {
+                    double newSL = currentPrice - trailingDistance;
+                    // Only move SL up, never down, and only if it's above break-even
+                    if(newSL > currentSL && newSL > openPrice)
+                    {
+                        if(trade.PositionModify(positionInfo.Ticket(), newSL, currentTP))
+                        {
+                            Print(StringFormat("Trailing SL updated for BUY #%d to %.2f", 
+                                  positionInfo.Ticket(), newSL));
+                        }
+                    }
+                }
+                else if(positionInfo.Type() == POSITION_TYPE_SELL)
+                {
+                    double newSL = currentPrice + trailingDistance;
+                    // Only move SL down, never up, and only if it's below break-even
+                    if(newSL < currentSL && newSL < openPrice)
+                    {
+                        if(trade.PositionModify(positionInfo.Ticket(), newSL, currentTP))
+                        {
+                            Print(StringFormat("Trailing SL updated for SELL #%d to %.2f", 
                                   positionInfo.Ticket(), newSL));
                         }
                     }
