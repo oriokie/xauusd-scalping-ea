@@ -70,7 +70,7 @@ input bool ShowValidationDetails = true;           // Show validation details on
 
 //--- Entry Validation (11-Point System) - UPDATED for better trade execution
 input group "=== 11-Point Entry Validation ==="
-input int MinValidationPoints = 4;                 // Minimum validation points required (REDUCED from 7 to 4)
+input int MinValidationPoints = 3;                 // Minimum validation points required (essentials: H4 Trend + RR + Session)
 input bool UseEssentialOnly = false;               // Use only essential validations (H4 Trend + Session + Valid RR)
 input bool Require_H4_Trend = true;                // 1. H4 Trend Alignment (ESSENTIAL)
 input bool Require_H1_Zone = false;                // 2. H1 Zone Present (OPTIONAL - was required)
@@ -1183,6 +1183,8 @@ int AnalyzeEntryOpportunity()
         if(Require_OrderBlock && !currentValidation.orderBlockValid)
             return 0;
         if(Require_ATR_Zone && !currentValidation.atrZoneValid)
+            return 0;
+        if(Require_ValidRR && !currentValidation.validRiskReward)
             return 0;
         if(Require_SessionFilter && !currentValidation.sessionActive)
             return 0;
