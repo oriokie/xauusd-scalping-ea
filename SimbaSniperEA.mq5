@@ -607,37 +607,83 @@ void DetectH1OrderBlocks()
     if(Bars(_Symbol, H1_Timeframe) < OrderBlockBars + 5)
         return;
     
-    // Look for order blocks in recent bars
-    for(int i = 2; i < 20; i++)
+    // Look for order blocks in recent bars with enhanced logic
+    for(int i = 3; i < 20; i++)
     {
+        double close3 = iClose(_Symbol, H1_Timeframe, i+2);
+        double close2 = iClose(_Symbol, H1_Timeframe, i+1);
         double close1 = iClose(_Symbol, H1_Timeframe, i);
+        double close0 = iClose(_Symbol, H1_Timeframe, i-1);
+        
         double open1 = iOpen(_Symbol, H1_Timeframe, i);
         double high1 = iHigh(_Symbol, H1_Timeframe, i);
         double low1 = iLow(_Symbol, H1_Timeframe, i);
         
-        double close0 = iClose(_Symbol, H1_Timeframe, i-1);
-        double open0 = iOpen(_Symbol, H1_Timeframe, i-1);
+        // Bullish OB: Strong down move, then reversal candle, then sustained up
+        bool bullishOB = (close2 < close3) &&              // Down move before
+                         (close1 < open1) &&                // Bearish candle (last down)
+                         (close0 > high1) &&                // Break above OB
+                         (close0 - close1) > atrH1[0] * 0.8; // Strong move
         
-        // Bullish Order Block: Down candle followed by strong up move
-        bool bullishOB = (close1 < open1) && (close0 > close1) && 
-                         (close0 - open0) > atrH1[0] * 0.5;
+        // Bearish OB: Strong up move, then reversal candle, then sustained down
+        bool bearishOB = (close2 > close3) &&              // Up move before
+                         (close1 > open1) &&                // Bullish candle (last up)
+                         (close0 < low1) &&                 // Break below OB
+                         (close1 - close0) > atrH1[0] * 0.8; // Strong move
         
-        // Bearish Order Block: Up candle followed by strong down move
-        bool bearishOB = (close1 > open1) && (close0 < close1) && 
-                         (open0 - close0) > atrH1[0] * 0.5;
-        
-        if(bullishOB || bearishOB)
+        if(bullishOB)
         {
             OrderBlock ob;
             ob.time = iTime(_Symbol, H1_Timeframe, i);
             ob.high = high1;
             ob.low = low1;
-            ob.isBullish = bullishOB;
+            ob.isBullish = true;
             ob.isValid = true;
             
-            int size = ArraySize(h1OrderBlocks);
-            ArrayResize(h1OrderBlocks, size + 1);
-            h1OrderBlocks[size] = ob;
+            // Check if OB hasn't been violated (price didn't go below low)
+            bool violated = false;
+            for(int j = i-1; j >= 0; j--)
+            {
+                if(iLow(_Symbol, H1_Timeframe, j) < low1)
+                {
+                    violated = true;
+                    break;
+                }
+            }
+            
+            if(!violated)
+            {
+                int size = ArraySize(h1OrderBlocks);
+                ArrayResize(h1OrderBlocks, size + 1);
+                h1OrderBlocks[size] = ob;
+            }
+        }
+        else if(bearishOB)
+        {
+            OrderBlock ob;
+            ob.time = iTime(_Symbol, H1_Timeframe, i);
+            ob.high = high1;
+            ob.low = low1;
+            ob.isBullish = false;
+            ob.isValid = true;
+            
+            // Check if OB hasn't been violated (price didn't go above high)
+            bool violated = false;
+            for(int j = i-1; j >= 0; j--)
+            {
+                if(iHigh(_Symbol, H1_Timeframe, j) > high1)
+                {
+                    violated = true;
+                    break;
+                }
+            }
+            
+            if(!violated)
+            {
+                int size = ArraySize(h1OrderBlocks);
+                ArrayResize(h1OrderBlocks, size + 1);
+                h1OrderBlocks[size] = ob;
+            }
         }
     }
 }
@@ -712,6 +758,13 @@ int AnalyzeEntryOpportunity()
     if(!IsVolatilityAcceptable())
     {
         lastErrorMsg = "Volatility outside acceptable range";
+        return 0;
+    }
+    
+    // Early filter: Check market structure
+    if(!IsMarketStructureClean())
+    {
+        // lastErrorMsg already set in IsMarketStructureClean
         return 0;
     }
     
@@ -1027,6 +1080,41 @@ bool IsVolatilityAcceptable()
 }
 
 //+------------------------------------------------------------------+
+//| Check if market structure is clean for entry                     |
+//+------------------------------------------------------------------+
+bool IsMarketStructureClean()
+{
+    // Avoid entries during choppy consolidation
+    if(Bars(_Symbol, H1_Timeframe) < 20)
+        return false;
+    
+    // Find highest high and lowest low in recent H1 bars
+    int highestBar = iHighest(_Symbol, H1_Timeframe, MODE_HIGH, 20, 0);
+    int lowestBar = iLowest(_Symbol, H1_Timeframe, MODE_LOW, 20, 0);
+    
+    double highestHigh = iHigh(_Symbol, H1_Timeframe, highestBar);
+    double lowestLow = iLow(_Symbol, H1_Timeframe, lowestBar);
+    
+    double range = highestHigh - lowestLow;
+    
+    // Too narrow range indicates consolidation
+    if(range < atrH1[0] * 2.0)
+    {
+        lastErrorMsg = "Market structure too choppy - narrow range";
+        return false;
+    }
+    
+    // Check for multiple timeframe alignment
+    if(h4Trend == TREND_NEUTRAL)
+    {
+        lastErrorMsg = "H4 trend is neutral - no clear structure";
+        return false;
+    }
+        
+    return true;
+}
+
+//+------------------------------------------------------------------+
 //| Find nearest swing point for stop-loss                           |
 //+------------------------------------------------------------------+
 double FindSwingPointSL(bool isBuyOrder, double entryPrice)
@@ -1254,12 +1342,34 @@ double CalculatePotentialRR(bool isBuySignal)
 }
 
 //+------------------------------------------------------------------+
+//| Calculate dynamic risk based on recent performance               |
+//+------------------------------------------------------------------+
+double CalculateDynamicRisk()
+{
+    // Need at least 3 trades for meaningful adjustment
+    if(dailyTrades < 3)
+        return RiskPercentage; // Not enough data
+    
+    double winRate = (double)dailyWins / dailyTrades;
+    
+    if(winRate < 0.4) // Losing streak
+        return RiskPercentage * 0.5; // Reduce risk by half
+    else if(winRate > 0.6) // Winning streak
+        return MathMin(RiskPercentage * 1.2, RiskPercentage * 1.5); // Increase risk (capped at 1.5x)
+    
+    return RiskPercentage;
+}
+
+//+------------------------------------------------------------------+
 //| Calculate lot size based on risk percentage                      |
 //+------------------------------------------------------------------+
 double CalculateLotSize(double stopLossPoints)
 {
     double balance = accountInfo.Balance();
-    double riskAmount = balance * (RiskPercentage / 100.0);
+    
+    // Use dynamic risk adjustment
+    double dynamicRisk = CalculateDynamicRisk();
+    double riskAmount = balance * (dynamicRisk / 100.0);
     
     double tickValue = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
     double tickSize = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
