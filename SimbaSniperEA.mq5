@@ -17,6 +17,8 @@
 // Custom modules
 #include "Include/RiskManager.mqh"
 #include "Include/PerformanceTracker.mqh"
+#include "Include/MarketAnalysis.mqh"
+#include "Include/TradeExecutor.mqh"
 
 //+------------------------------------------------------------------+
 //| Input Parameters                                                 |
@@ -81,6 +83,30 @@ input bool EnablePerformanceTracking = true;       // Enable detailed performanc
 input bool TrackMAE_MFE = true;                    // Track Maximum Adverse/Favorable Excursion
 input bool ShowSessionStats = true;                // Show session-based statistics
 input bool ShowSetupTypeStats = true;              // Show setup type statistics
+
+//--- Entry Quality & Market Analysis
+input group "=== Entry Quality & Analysis ==="
+input bool UseEntryGrading = true;                 // Use entry quality grading (A/B/C/D)
+input bool SkipGradeD = true;                      // Skip Grade D (poor quality) setups
+input bool AdjustSizeByGrade = true;               // Adjust position size by grade (A=120%, B=100%, C=70%)
+input bool UseConfluenceBonus = true;              // Add bonus points for confluence detection
+input bool UseMarketRegimeFilter = true;           // Filter entries by market regime
+input bool AvoidHighVolatilityRegime = true;       // Avoid trading in high volatility regime
+input bool PreferStrongTrend = false;              // Only trade in strong trend regime (strict)
+
+//--- Exit Strategy Enhancement
+input group "=== Exit Strategy ==="
+input bool UsePartialExits = true;                 // Enable partial profit taking
+input double Partial1_Percent = 50.0;              // First partial: % of position to close
+input double Partial1_RR = 1.5;                    // First partial: R:R ratio
+input double Partial2_Percent = 30.0;              // Second partial: % of position to close
+input double Partial2_RR = 2.5;                    // Second partial: R:R ratio
+input bool UseSmartTrailing = true;                // Enable smart trailing stop
+input double SmartTrailingATRMult = 1.0;           // Smart trailing ATR multiplier
+input int TrailingPauseBars = 3;                   // Pause trailing during pullbacks (bars)
+input bool UseTimeDecayExit = true;                // Enable time-decay exit
+input int TimeDecayBars = 100;                     // Exit if no movement after X bars
+input double TimeDecayMinRR = 0.5;                 // Minimum R:R to keep position open
 
 //--- Diagnostics and Logging
 input group "=== Diagnostics ==="
@@ -164,6 +190,8 @@ CAccountInfo accountInfo;
 // Advanced modules
 CRiskManager *riskManager;
 CPerformanceTracker *perfTracker;
+CMarketAnalysis *marketAnalysis;
+CTradeExecutor *tradeExecutor;
 
 // ATR Handles for each timeframe
 int atrH4Handle, atrH1Handle, atrM5Handle, atrM1Handle;
@@ -285,6 +313,14 @@ int OnInit()
     
     perfTracker = new CPerformanceTracker();
     
+    marketAnalysis = new CMarketAnalysis();
+    
+    tradeExecutor = new CTradeExecutor();
+    tradeExecutor.Init(UsePartialExits, Partial1_Percent, Partial1_RR,
+                      Partial2_Percent, Partial2_RR,
+                      UseSmartTrailing, SmartTrailingATRMult, TrailingPauseBars,
+                      UseTimeDecayExit, TimeDecayBars, TimeDecayMinRR);
+    
     // Initialize ATR indicators for each timeframe
     atrH4Handle = iATR(_Symbol, H4_Timeframe, ATR_Period);
     atrH1Handle = iATR(_Symbol, H1_Timeframe, ATR_Period);
@@ -350,6 +386,10 @@ void OnDeinit(const int reason)
         delete riskManager;
     if(CheckPointer(perfTracker) == POINTER_DYNAMIC)
         delete perfTracker;
+    if(CheckPointer(marketAnalysis) == POINTER_DYNAMIC)
+        delete marketAnalysis;
+    if(CheckPointer(tradeExecutor) == POINTER_DYNAMIC)
+        delete tradeExecutor;
     
     // Release indicators
     IndicatorRelease(atrH4Handle);
@@ -450,7 +490,17 @@ void OnTick()
         }
     }
     
-    // Manage open positions
+    // Manage positions with TradeExecutor
+    if(CheckPointer(tradeExecutor) == POINTER_DYNAMIC && tradeExecutor.IsTracking())
+    {
+        double currentBid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+        double currentAsk = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+        double currentATR = (ArraySize(atrM5) > 0) ? atrM5[0] : 0.0;
+        
+        tradeExecutor.ManagePosition(currentBid, currentAsk, currentATR, M5_Timeframe, _Symbol);
+    }
+    
+    // Manage open positions (legacy management for positions not tracked by TradeExecutor)
     ManageOpenPositions();
     
     // Update dashboard
@@ -1298,6 +1348,73 @@ int AnalyzeEntryOpportunity()
             return 0;
     }
     
+    // Advanced: Market regime analysis and entry grading
+    if(UseMarketRegimeFilter && CheckPointer(marketAnalysis) == POINTER_DYNAMIC)
+    {
+        // Detect market regime
+        if(ArraySize(atrH1) >= 3)
+        {
+            double avgATR = (atrH1[0] + atrH1[1] + atrH1[2]) / 3.0;
+            int emaTrend = (h4Trend == TREND_BULLISH) ? 1 : (h4Trend == TREND_BEARISH ? -1 : 0);
+            
+            MARKET_REGIME regime = marketAnalysis.DetectMarketRegime(_Symbol, H4_Timeframe, atrH1[0], avgATR, emaTrend);
+            
+            // Filter by regime
+            if(AvoidHighVolatilityRegime && regime == REGIME_HIGH_VOLATILITY)
+            {
+                lastErrorMsg = "Avoiding high volatility regime";
+                return 0;
+            }
+            
+            if(PreferStrongTrend && regime != REGIME_STRONG_TREND)
+            {
+                lastErrorMsg = "Waiting for strong trend regime";
+                return 0;
+            }
+        }
+    }
+    
+    // Advanced: Entry quality grading
+    if(UseEntryGrading && CheckPointer(marketAnalysis) == POINTER_DYNAMIC)
+    {
+        // Detect confluence
+        int confluenceCount = 0;
+        if(UseConfluenceBonus)
+        {
+            confluenceCount = marketAnalysis.DetectConfluence(
+                currentValidation.h4TrendValid,
+                currentValidation.h1ZoneValid,
+                currentValidation.bosDetected,
+                currentValidation.fvgPresent,
+                currentValidation.orderBlockValid,
+                currentValidation.asianLevelValid,
+                currentValidation.validRiskReward
+            );
+        }
+        
+        // Calculate entry grade
+        MARKET_REGIME regime = marketAnalysis.GetCurrentRegime();
+        ENTRY_GRADE grade = marketAnalysis.CalculateEntryGrade(currentValidation.weightedScore, confluenceCount, regime);
+        
+        // Skip poor quality setups
+        if(SkipGradeD && grade == GRADE_D)
+        {
+            lastErrorMsg = StringFormat("Entry quality Grade D - skipping (Score: %.1f, Confluence: %d)",
+                                       currentValidation.weightedScore, confluenceCount);
+            return 0;
+        }
+        
+        // Log entry quality
+        if(EnableDetailedLogging && (grade == GRADE_A || grade == GRADE_B))
+        {
+            Print(StringFormat("Entry Grade %s | Score: %.1f | Confluence: %d | Regime: %s",
+                             marketAnalysis.GetGradeString(grade),
+                             currentValidation.weightedScore,
+                             confluenceCount,
+                             marketAnalysis.GetRegimeString()));
+        }
+    }
+    
     // Determine direction based on H4 trend
     if(h4Trend == TREND_BULLISH)
         return 1; // Buy signal
@@ -1731,6 +1848,8 @@ void ExecuteBuyOrder()
     if(trade.Buy(lotSize, _Symbol, ask, sl, tp, comment))
     {
         dailyTrades++;
+        ulong ticket = trade.ResultOrder();
+        
         Print(StringFormat("BUY order executed at %.2f, SL: %.2f, TP: %.2f, Lot: %.2f, Validation: %d/11", 
               ask, sl, tp, lotSize, currentValidation.totalPoints));
         
@@ -1741,8 +1860,13 @@ void ExecuteBuyOrder()
         // Start tracking position in performance tracker
         if(EnablePerformanceTracking && CheckPointer(perfTracker) == POINTER_DYNAMIC)
         {
-            ulong ticket = trade.ResultOrder();
             perfTracker.StartTrackingPosition(ticket, ask, sl, tp, TimeCurrent());
+        }
+        
+        // Start tracking in trade executor for advanced exit management
+        if(CheckPointer(tradeExecutor) == POINTER_DYNAMIC && (UsePartialExits || UseSmartTrailing))
+        {
+            tradeExecutor.StartTracking(ticket, ask, sl, tp);
         }
     }
     else
@@ -1823,6 +1947,8 @@ void ExecuteSellOrder()
     if(trade.Sell(lotSize, _Symbol, bid, sl, tp, comment))
     {
         dailyTrades++;
+        ulong ticket = trade.ResultOrder();
+        
         Print(StringFormat("SELL order executed at %.2f, SL: %.2f, TP: %.2f, Lot: %.2f, Validation: %d/11", 
               bid, sl, tp, lotSize, currentValidation.totalPoints));
         
@@ -1833,8 +1959,13 @@ void ExecuteSellOrder()
         // Start tracking position in performance tracker
         if(EnablePerformanceTracking && CheckPointer(perfTracker) == POINTER_DYNAMIC)
         {
-            ulong ticket = trade.ResultOrder();
             perfTracker.StartTrackingPosition(ticket, bid, sl, tp, TimeCurrent());
+        }
+        
+        // Start tracking in trade executor for advanced exit management
+        if(CheckPointer(tradeExecutor) == POINTER_DYNAMIC && (UsePartialExits || UseSmartTrailing))
+        {
+            tradeExecutor.StartTracking(ticket, bid, sl, tp);
         }
     }
     else
