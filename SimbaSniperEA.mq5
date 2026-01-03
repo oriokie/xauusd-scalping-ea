@@ -911,7 +911,9 @@ int AnalyzeFVGStrategy()
                 // Check FVG age if required
                 if(FVG_RequireFresh)
                 {
-                    int barsSinceFVG = iBarShift(_Symbol, H1_Timeframe, h1FVGs[i].time);
+                    // Calculate bars since FVG creation
+                    datetime currentTime = iTime(_Symbol, H1_Timeframe, 0);
+                    int barsSinceFVG = (int)((currentTime - h1FVGs[i].time) / PeriodSeconds(H1_Timeframe));
                     if(barsSinceFVG > FVG_MaxAgeBars)
                         continue;
                 }
