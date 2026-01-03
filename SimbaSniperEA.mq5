@@ -79,6 +79,7 @@ input int SessionGMTOffset = 0;                    // Broker GMT Offset
 input bool UseAsianHighLow = true;                 // Use Asian High/Low levels
 input bool AsianRangeBound = true;                 // Asian session: range-bound strategy
 input bool LondonNYBreakout = true;                // London/NY sessions: breakout strategy
+input double AsianLevelDistanceMultiplier = 0.5;   // Asian level proximity multiplier (ATR)
 
 //--- Dashboard Settings
 input group "=== Dashboard Settings ==="
@@ -181,6 +182,9 @@ EntryValidation currentValidation;
 datetime lastBarTime;
 string lastErrorMsg = "";
 
+// Constants
+#define PRICE_UNSET 999999.0
+
 // Session tracking
 enum SESSION_TYPE { SESSION_ASIAN, SESSION_LONDON, SESSION_NEWYORK, SESSION_NONE };
 SESSION_TYPE currentSession = SESSION_NONE;
@@ -220,7 +224,7 @@ int OnInit()
     
     // Initialize Asian levels
     asianLevels.high = 0;
-    asianLevels.low = 0;
+    asianLevels.low = PRICE_UNSET;
     asianLevels.sessionDate = 0;
     asianLevels.isValid = false;
     
@@ -735,7 +739,8 @@ int AnalyzeEntryOpportunity()
         double distanceToHigh = MathAbs(currentPrice - asianLevels.high);
         double distanceToLow = MathAbs(currentPrice - asianLevels.low);
         
-        if(distanceToHigh < atrM5[0] * 0.5 || distanceToLow < atrM5[0] * 0.5)
+        if(distanceToHigh < atrM5[0] * AsianLevelDistanceMultiplier || 
+           distanceToLow < atrM5[0] * AsianLevelDistanceMultiplier)
         {
             currentValidation.asianLevelValid = true;
             currentValidation.totalPoints++;
@@ -889,7 +894,7 @@ bool DetectBreakout()
     
     // Check for breakout of swing points
     double swingHigh = -1;
-    double swingLow = 999999;
+    double swingLow = PRICE_UNSET;
     
     for(int i = 2; i < 10; i++)
     {
@@ -953,7 +958,7 @@ double FindSwingPointSL(bool isBuyOrder, double entryPrice)
     if(isBuyOrder)
     {
         // For buy orders, find recent swing low
-        double lowestLow = 999999;
+        double lowestLow = PRICE_UNSET;
         for(int i = 1; i < SwingLookback; i++)
         {
             double low = iLow(_Symbol, M5_Timeframe, i);
@@ -961,7 +966,7 @@ double FindSwingPointSL(bool isBuyOrder, double entryPrice)
                 lowestLow = low;
         }
         
-        if(lowestLow < 999999)
+        if(lowestLow < PRICE_UNSET)
             swingPoint = lowestLow;
     }
     else
@@ -1186,7 +1191,8 @@ void ManageOpenPositions()
                     double triggerPrice = openPrice - (tpDistance * BreakEvenTriggerRatio);
                     
                     // Move SL to break-even - small buffer when price reaches trigger
-                    if(currentPrice <= triggerPrice && (currentSL > openPrice || currentSL == 0))
+                    // Check if SL hasn't been moved to break-even yet
+                    if(currentPrice <= triggerPrice && (currentSL == 0 || currentSL > openPrice))
                     {
                         double newSL = openPrice - (atrM5[0] * 0.1); // Small buffer below entry
                         if(trade.PositionModify(positionInfo.Ticket(), newSL, currentTP))
@@ -1258,7 +1264,7 @@ void UpdateAsianSessionLevels()
     {
         // New day - reset Asian levels
         asianLevels.high = 0;
-        asianLevels.low = 999999;
+        asianLevels.low = PRICE_UNSET;
         asianLevels.sessionDate = TimeCurrent();
         asianLevels.isValid = false;
     }
@@ -1272,7 +1278,7 @@ void UpdateAsianSessionLevels()
         if(currentHigh > asianLevels.high || asianLevels.high == 0)
             asianLevels.high = currentHigh;
         
-        if(currentLow < asianLevels.low || asianLevels.low == 999999)
+        if(currentLow < asianLevels.low || asianLevels.low == PRICE_UNSET)
             asianLevels.low = currentLow;
         
         asianLevels.isValid = true;
