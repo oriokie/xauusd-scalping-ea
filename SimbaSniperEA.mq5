@@ -88,6 +88,51 @@ enum ENTRY_STRATEGY { STRATEGY_UNIVERSAL, STRATEGY_BREAKOUT, STRATEGY_REVERSAL, 
 input ENTRY_STRATEGY EntryStrategy = STRATEGY_UNIVERSAL;  // Entry Strategy Type
 input bool SessionSpecificRulesOptional = true;    // Make session-specific rules optional (recommended: true)
 
+//--- Independent Trading Strategies System
+input group "=== Independent Strategies (NEW) ==="
+input bool UseIndependentStrategies = false;       // Enable Independent Strategies System
+input bool EnableAllStrategies = false;            // Quick toggle: Enable all strategies
+
+//--- FVG Strategy
+input group "=== FVG Strategy ==="
+input bool Enable_FVG_Strategy = false;            // Enable FVG Strategy
+input double FVG_MinRR = 2.0;                      // FVG: Minimum Risk/Reward Ratio
+input bool FVG_RequireRejection = false;           // FVG: Require rejection candle pattern
+input bool FVG_RequireFresh = false;               // FVG: Require fresh FVG (< 20 bars old)
+input int FVG_MaxAgeBars = 20;                     // FVG: Maximum age in bars
+
+//--- BOS Strategy
+input group "=== BOS Strategy ==="
+input bool Enable_BOS_Strategy = false;            // Enable BOS Strategy
+input double BOS_MinRR = 2.0;                      // BOS: Minimum Risk/Reward Ratio
+input bool BOS_RequireVolumeExpansion = false;     // BOS: Require volume expansion (150% avg)
+input double BOS_VolumeMultiplier = 1.5;           // BOS: Volume expansion multiplier
+input bool BOS_RequireProximityToZone = false;     // BOS: Require proximity to H1 zone
+
+//--- HTF Zone Strategy
+input group "=== HTF Zone Strategy ==="
+input bool Enable_HTFZone_Strategy = false;        // Enable HTF Zone Strategy
+input double HTFZone_MinRR = 2.5;                  // HTF Zone: Minimum Risk/Reward Ratio
+input int HTFZone_MinTouches = 3;                  // HTF Zone: Minimum touches required
+input double HTFZone_MinStrength = 1.0;            // HTF Zone: Minimum strength score
+input bool HTFZone_RequireRejection = true;        // HTF Zone: Require rejection candle (wick > 2x body)
+
+//--- Order Block Strategy
+input group "=== Order Block Strategy ==="
+input bool Enable_OB_Strategy = false;             // Enable Order Block Strategy
+input double OB_MinRR = 2.0;                       // OB: Minimum Risk/Reward Ratio
+input bool OB_RequireFVG = false;                  // OB: Require FVG within OB
+input bool OB_OnlyUntested = false;                // OB: Only untested blocks (no violation)
+
+//--- Breakout Strategy (Asian Range)
+input group "=== Breakout Strategy ==="
+input bool Enable_Breakout_Strategy = false;       // Enable Breakout Strategy
+input double Breakout_MinRR = 1.5;                 // Breakout: Minimum Risk/Reward Ratio
+input bool Breakout_RequireVolumeExpansion = true; // Breakout: Require volume expansion
+input double Breakout_VolumeMultiplier = 1.5;      // Breakout: Volume expansion multiplier
+input bool Breakout_RequireATRExpansion = true;    // Breakout: Require ATR expansion
+input double Breakout_ATRMultiplier = 1.5;         // Breakout: ATR expansion multiplier
+
 //--- Trading Sessions
 input group "=== Trading Sessions ==="
 input bool TradeLondonSession = true;              // Trade London Session
@@ -842,6 +887,322 @@ void DetectH1FairValueGaps()
 }
 
 //+------------------------------------------------------------------+
+//| FVG Strategy Analysis                                             |
+//| Returns: 1 (buy), -1 (sell), 0 (no signal)                       |
+//+------------------------------------------------------------------+
+int AnalyzeFVGStrategy()
+{
+    // Must have H4 trend alignment
+    if(h4Trend == TREND_NEUTRAL)
+        return 0;
+    
+    double currentPrice = (SymbolInfoDouble(_Symbol, SYMBOL_BID) + 
+                          SymbolInfoDouble(_Symbol, SYMBOL_ASK)) / 2.0;
+    
+    // Check for valid FVG entry
+    for(int i = 0; i < ArraySize(h1FVGs); i++)
+    {
+        if(!h1FVGs[i].isFilled)
+        {
+            // Check if price is within FVG
+            if(currentPrice >= h1FVGs[i].lowerBound && 
+               currentPrice <= h1FVGs[i].upperBound)
+            {
+                // Check FVG age if required
+                if(FVG_RequireFresh)
+                {
+                    int barsSinceFVG = iBarShift(_Symbol, H1_Timeframe, h1FVGs[i].time);
+                    if(barsSinceFVG > FVG_MaxAgeBars)
+                        continue;
+                }
+                
+                // Check trend alignment
+                bool isBullishSetup = h1FVGs[i].isBullish && (h4Trend == TREND_BULLISH);
+                bool isBearishSetup = !h1FVGs[i].isBullish && (h4Trend == TREND_BEARISH);
+                
+                if(!isBullishSetup && !isBearishSetup)
+                    continue;
+                
+                // Check rejection if required
+                if(FVG_RequireRejection)
+                {
+                    if(!DetectRejectionFromLevel())
+                        continue;
+                }
+                
+                // Check R:R ratio
+                double potentialRR = CalculatePotentialRR(isBullishSetup);
+                if(potentialRR < FVG_MinRR)
+                    continue;
+                
+                // Valid FVG signal
+                return isBullishSetup ? 1 : -1;
+            }
+        }
+    }
+    
+    return 0;
+}
+
+//+------------------------------------------------------------------+
+//| BOS Strategy Analysis                                             |
+//| Returns: 1 (buy), -1 (sell), 0 (no signal)                       |
+//+------------------------------------------------------------------+
+int AnalyzeBOSStrategy()
+{
+    // Must have H4 trend alignment
+    if(h4Trend == TREND_NEUTRAL)
+        return 0;
+    
+    if(Bars(_Symbol, M5_Timeframe) < 10)
+        return 0;
+    
+    // Get recent swing points on M5
+    double swingHigh = -1;
+    double swingLow = 999999;
+    
+    for(int i = 2; i < SwingLookback; i++)
+    {
+        double high = iHigh(_Symbol, M5_Timeframe, i);
+        double low = iLow(_Symbol, M5_Timeframe, i);
+        
+        if(high > swingHigh)
+            swingHigh = high;
+        if(low < swingLow)
+            swingLow = low;
+    }
+    
+    double currentClose = iClose(_Symbol, M5_Timeframe, 0);
+    double currentPrice = (SymbolInfoDouble(_Symbol, SYMBOL_BID) + 
+                          SymbolInfoDouble(_Symbol, SYMBOL_ASK)) / 2.0;
+    
+    // Check for BOS in trend direction
+    bool bullishBOS = (currentClose > swingHigh) && (h4Trend == TREND_BULLISH);
+    bool bearishBOS = (currentClose < swingLow) && (h4Trend == TREND_BEARISH);
+    
+    if(!bullishBOS && !bearishBOS)
+        return 0;
+    
+    // Check volume expansion if required
+    if(BOS_RequireVolumeExpansion)
+    {
+        if(!CheckVolumeExpansion())
+            return 0;
+    }
+    
+    // Check proximity to H1 zone if required
+    if(BOS_RequireProximityToZone)
+    {
+        bool nearZone = false;
+        for(int i = 0; i < ArraySize(h1Zones); i++)
+        {
+            if(MathAbs(currentPrice - h1Zones[i].level) < atrH1[0] * ATR_ZoneMultiplier)
+            {
+                nearZone = true;
+                break;
+            }
+        }
+        if(!nearZone)
+            return 0;
+    }
+    
+    // Check R:R ratio
+    double potentialRR = CalculatePotentialRR(bullishBOS);
+    if(potentialRR < BOS_MinRR)
+        return 0;
+    
+    // Valid BOS signal
+    return bullishBOS ? 1 : -1;
+}
+
+//+------------------------------------------------------------------+
+//| HTF Zone Strategy Analysis                                        |
+//| Returns: 1 (buy), -1 (sell), 0 (no signal)                       |
+//+------------------------------------------------------------------+
+int AnalyzeHTFZoneStrategy()
+{
+    // Must have H4 trend alignment
+    if(h4Trend == TREND_NEUTRAL)
+        return 0;
+    
+    double currentPrice = (SymbolInfoDouble(_Symbol, SYMBOL_BID) + 
+                          SymbolInfoDouble(_Symbol, SYMBOL_ASK)) / 2.0;
+    
+    // Check for valid H1 zone
+    for(int i = 0; i < ArraySize(h1Zones); i++)
+    {
+        // Check if price is at zone
+        if(MathAbs(currentPrice - h1Zones[i].level) < atrH1[0] * ATR_ZoneMultiplier)
+        {
+            // Check minimum touches
+            if(h1Zones[i].touches < HTFZone_MinTouches)
+                continue;
+            
+            // Check zone strength
+            if(h1Zones[i].strength < HTFZone_MinStrength)
+                continue;
+            
+            // Check trend alignment
+            bool isBullishSetup = h1Zones[i].isSupport && (h4Trend == TREND_BULLISH);
+            bool isBearishSetup = !h1Zones[i].isSupport && (h4Trend == TREND_BEARISH);
+            
+            if(!isBullishSetup && !isBearishSetup)
+                continue;
+            
+            // Check rejection if required
+            if(HTFZone_RequireRejection)
+            {
+                if(!DetectRejectionFromLevel())
+                    continue;
+            }
+            
+            // Check R:R ratio
+            double potentialRR = CalculatePotentialRR(isBullishSetup);
+            if(potentialRR < HTFZone_MinRR)
+                continue;
+            
+            // Valid zone signal
+            return isBullishSetup ? 1 : -1;
+        }
+    }
+    
+    return 0;
+}
+
+//+------------------------------------------------------------------+
+//| Order Block Strategy Analysis                                     |
+//| Returns: 1 (buy), -1 (sell), 0 (no signal)                       |
+//+------------------------------------------------------------------+
+int AnalyzeOrderBlockStrategy()
+{
+    // Must have H4 trend alignment
+    if(h4Trend == TREND_NEUTRAL)
+        return 0;
+    
+    double currentPrice = (SymbolInfoDouble(_Symbol, SYMBOL_BID) + 
+                          SymbolInfoDouble(_Symbol, SYMBOL_ASK)) / 2.0;
+    
+    // Check for valid order block
+    for(int i = 0; i < ArraySize(h1OrderBlocks); i++)
+    {
+        // Check if OB is valid and not violated (if required)
+        if(OB_OnlyUntested && !h1OrderBlocks[i].isValid)
+            continue;
+        
+        // Check if price is within order block
+        if(currentPrice >= h1OrderBlocks[i].low && 
+           currentPrice <= h1OrderBlocks[i].high)
+        {
+            // Check trend alignment
+            bool isBullishSetup = h1OrderBlocks[i].isBullish && (h4Trend == TREND_BULLISH);
+            bool isBearishSetup = !h1OrderBlocks[i].isBullish && (h4Trend == TREND_BEARISH);
+            
+            if(!isBullishSetup && !isBearishSetup)
+                continue;
+            
+            // Check for FVG within OB if required
+            if(OB_RequireFVG)
+            {
+                bool hasFVG = false;
+                for(int j = 0; j < ArraySize(h1FVGs); j++)
+                {
+                    if(!h1FVGs[j].isFilled)
+                    {
+                        // Check if FVG overlaps with OB
+                        if((h1FVGs[j].lowerBound >= h1OrderBlocks[i].low && 
+                            h1FVGs[j].lowerBound <= h1OrderBlocks[i].high) ||
+                           (h1FVGs[j].upperBound >= h1OrderBlocks[i].low && 
+                            h1FVGs[j].upperBound <= h1OrderBlocks[i].high))
+                        {
+                            hasFVG = true;
+                            break;
+                        }
+                    }
+                }
+                if(!hasFVG)
+                    continue;
+            }
+            
+            // Check R:R ratio
+            double potentialRR = CalculatePotentialRR(isBullishSetup);
+            if(potentialRR < OB_MinRR)
+                continue;
+            
+            // Valid order block signal
+            return isBullishSetup ? 1 : -1;
+        }
+    }
+    
+    return 0;
+}
+
+//+------------------------------------------------------------------+
+//| Breakout Strategy Analysis (Asian Range)                          |
+//| Returns: 1 (buy), -1 (sell), 0 (no signal)                       |
+//+------------------------------------------------------------------+
+int AnalyzeBreakoutStrategy()
+{
+    // Must have H4 trend alignment
+    if(h4Trend == TREND_NEUTRAL)
+        return 0;
+    
+    // Must have valid Asian levels
+    if(!UseAsianHighLow || !asianLevels.isValid)
+        return 0;
+    
+    // Must be in London or NY session
+    if(currentSession != SESSION_LONDON && currentSession != SESSION_NEWYORK)
+        return 0;
+    
+    double currentClose = iClose(_Symbol, M5_Timeframe, 0);
+    
+    // Check for breakout of Asian range
+    bool bullishBreakout = (currentClose > asianLevels.high) && (h4Trend == TREND_BULLISH);
+    bool bearishBreakout = (currentClose < asianLevels.low) && (h4Trend == TREND_BEARISH);
+    
+    if(!bullishBreakout && !bearishBreakout)
+        return 0;
+    
+    // Check volume expansion if required
+    if(Breakout_RequireVolumeExpansion)
+    {
+        if(!CheckVolumeExpansion())
+            return 0;
+    }
+    
+    // Check ATR expansion if required
+    if(Breakout_RequireATRExpansion)
+    {
+        if(CopyBuffer(atrM5Handle, 0, 0, 2, atrM5) != 2)
+            return 0;
+        
+        // Calculate average ATR from recent bars
+        double avgATR = 0;
+        int avgBars = 14;
+        for(int i = 1; i <= avgBars && i < Bars(_Symbol, M5_Timeframe); i++)
+        {
+            double atrValue[];
+            ArraySetAsSeries(atrValue, true);
+            if(CopyBuffer(atrM5Handle, 0, i, 1, atrValue) == 1)
+                avgATR += atrValue[0];
+        }
+        avgATR /= avgBars;
+        
+        // Current ATR must be greater than avg ATR * multiplier
+        if(atrM5[0] < avgATR * Breakout_ATRMultiplier)
+            return 0;
+    }
+    
+    // Check R:R ratio
+    double potentialRR = CalculatePotentialRR(bullishBreakout);
+    if(potentialRR < Breakout_MinRR)
+        return 0;
+    
+    // Valid breakout signal
+    return bullishBreakout ? 1 : -1;
+}
+
+//+------------------------------------------------------------------+
 //| Analyze entry opportunity with 11-point validation                |
 //+------------------------------------------------------------------+
 int AnalyzeEntryOpportunity()
@@ -903,6 +1264,75 @@ int AnalyzeEntryOpportunity()
         // lastErrorMsg already set in IsMarketStructureClean
         return 0;
     }
+    
+    // NEW: Independent Strategies System
+    if(UseIndependentStrategies)
+    {
+        // Check if any enabled strategy produces a signal
+        int signal = 0;
+        
+        // Check each enabled strategy
+        if(Enable_FVG_Strategy || EnableAllStrategies)
+        {
+            signal = AnalyzeFVGStrategy();
+            if(signal != 0)
+            {
+                if(EnableDetailedLogging)
+                    Print("FVG Strategy triggered: ", signal > 0 ? "BUY" : "SELL");
+                return signal;
+            }
+        }
+        
+        if(Enable_BOS_Strategy || EnableAllStrategies)
+        {
+            signal = AnalyzeBOSStrategy();
+            if(signal != 0)
+            {
+                if(EnableDetailedLogging)
+                    Print("BOS Strategy triggered: ", signal > 0 ? "BUY" : "SELL");
+                return signal;
+            }
+        }
+        
+        if(Enable_HTFZone_Strategy || EnableAllStrategies)
+        {
+            signal = AnalyzeHTFZoneStrategy();
+            if(signal != 0)
+            {
+                if(EnableDetailedLogging)
+                    Print("HTF Zone Strategy triggered: ", signal > 0 ? "BUY" : "SELL");
+                return signal;
+            }
+        }
+        
+        if(Enable_OB_Strategy || EnableAllStrategies)
+        {
+            signal = AnalyzeOrderBlockStrategy();
+            if(signal != 0)
+            {
+                if(EnableDetailedLogging)
+                    Print("Order Block Strategy triggered: ", signal > 0 ? "BUY" : "SELL");
+                return signal;
+            }
+        }
+        
+        if(Enable_Breakout_Strategy || EnableAllStrategies)
+        {
+            signal = AnalyzeBreakoutStrategy();
+            if(signal != 0)
+            {
+                if(EnableDetailedLogging)
+                    Print("Breakout Strategy triggered: ", signal > 0 ? "BUY" : "SELL");
+                return signal;
+            }
+        }
+        
+        // No independent strategy triggered
+        lastErrorMsg = "Independent strategies: No valid signal from enabled strategies";
+        return 0;
+    }
+    
+    // LEGACY: 11-Point Validation System (original logic below)
     
     // 1. H4 Trend Alignment
     if(h4Trend == TREND_BULLISH || h4Trend == TREND_BEARISH)
