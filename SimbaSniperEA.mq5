@@ -30,15 +30,15 @@ input bool UseM1Precision = false;                 // Use M1 for precision entri
 input group "=== Risk Management ==="
 input double RiskPercentage = 1.0;                 // Risk per trade (%)
 input double MaxDailyLossPercent = 3.0;            // Maximum daily loss (%)
-input double MinRiskRewardRatio = 2.0;             // Minimum Risk/Reward Ratio
+input double MinRiskRewardRatio = 2.5;             // Minimum Risk/Reward Ratio
 input int MaxPositions = 1;                        // Maximum concurrent positions
 
 //--- ATR Settings
 input group "=== ATR Settings ==="
 input int ATR_Period = 14;                         // ATR Period
 input double ATR_ZoneMultiplier = 1.5;             // ATR multiplier for zone validation
-input double ATR_StopLossMultiplier = 1.5;         // Stop Loss ATR Multiplier
-input double ATR_TakeProfitMultiplier = 3.0;       // Take Profit ATR Multiplier
+input double ATR_StopLossMultiplier = 2.0;         // Stop Loss ATR Multiplier
+input double ATR_TakeProfitMultiplier = 4.0;       // Take Profit ATR Multiplier
 input double ATR_BreakoutMultiplier = 1.5;         // Breakout detection ATR multiplier
 
 //--- Structure Detection Settings
@@ -56,13 +56,13 @@ input group "=== 9-Point Entry Validation ==="
 input bool Require_H4_Trend = true;                // 1. H4 Trend Alignment
 input bool Require_H1_Zone = true;                 // 2. H1 Zone Present
 input bool Require_BOS = true;                     // 3. Break of Structure
-input bool Require_LiquiditySweep = false;         // 4. Liquidity Sweep (Optional)
-input bool Require_FVG = false;                    // 5. Fair Value Gap (Optional)
+input bool Require_LiquiditySweep = true;         // 4. Liquidity Sweep (Optional)
+input bool Require_FVG = true;                    // 5. Fair Value Gap (Optional)
 input bool Require_OrderBlock = true;              // 6. Order Block Confirmation
 input bool Require_ATR_Zone = true;                // 7. ATR Zone Validation
 input bool Require_ValidRR = true;                 // 8. Valid Risk/Reward
 input bool Require_SessionFilter = true;           // 9. Trading Session Active
-input int MinValidationPoints = 6;                 // Minimum validation points required (out of 9)
+input int MinValidationPoints = 7;                 // Minimum validation points required (out of 9)
 
 //--- Trading Sessions
 input group "=== Trading Sessions ==="
@@ -747,9 +747,14 @@ int AnalyzeEntryOpportunity()
         }
     }
     
-    // 10. Valid Risk/Reward
-    currentValidation.validRiskReward = true; // Will be validated in order execution
-    currentValidation.totalPoints++;
+    // 10. Valid Risk/Reward - Calculate actual potential R:R
+    bool isBuySignal = (h4Trend == TREND_BULLISH);
+    double potentialRR = CalculatePotentialRR(isBuySignal);
+    if(potentialRR >= MinRiskRewardRatio)
+    {
+        currentValidation.validRiskReward = true;
+        currentValidation.totalPoints++;
+    }
     
     // 11. Session Filter
     currentValidation.sessionActive = IsWithinTradingSession();
@@ -1121,6 +1126,58 @@ void ExecuteSellOrder()
 }
 
 //+------------------------------------------------------------------+
+//| Calculate potential risk/reward ratio for entry validation       |
+//+------------------------------------------------------------------+
+double CalculatePotentialRR(bool isBuySignal)
+{
+    double currentPrice;
+    double slDistance = atrM5[0] * ATR_StopLossMultiplier;
+    double tpDistance = atrM5[0] * ATR_TakeProfitMultiplier;
+    
+    if(isBuySignal)
+    {
+        currentPrice = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+        
+        // Check for swing point SL
+        double swingPointSL = FindSwingPointSL(true, currentPrice);
+        if(swingPointSL > 0.0)
+        {
+            double swingDistance = currentPrice - swingPointSL;
+            // Use swing point if it provides better (wider) stop
+            if(swingDistance > slDistance && swingDistance < slDistance * 2.0)
+            {
+                slDistance = swingDistance;
+            }
+        }
+    }
+    else
+    {
+        currentPrice = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+        
+        // Check for swing point SL
+        double swingPointSL = FindSwingPointSL(false, currentPrice);
+        if(swingPointSL > 0.0)
+        {
+            double swingDistance = swingPointSL - currentPrice;
+            // Use swing point if it provides better (wider) stop
+            if(swingDistance > slDistance && swingDistance < slDistance * 2.0)
+            {
+                slDistance = swingDistance;
+            }
+        }
+    }
+    
+    // Ensure minimum RR ratio
+    if(tpDistance < slDistance * MinRiskRewardRatio)
+        tpDistance = slDistance * MinRiskRewardRatio;
+    
+    if(slDistance > 0)
+        return tpDistance / slDistance;
+    
+    return 0.0;
+}
+
+//+------------------------------------------------------------------+
 //| Calculate lot size based on risk percentage                      |
 //+------------------------------------------------------------------+
 double CalculateLotSize(double stopLossPoints)
@@ -1192,7 +1249,7 @@ void ManageOpenPositions()
                     
                     // Move SL to break-even - small buffer when price reaches trigger
                     // Check if SL hasn't been moved to break-even yet
-                    if(currentPrice <= triggerPrice && (currentSL == 0 || currentSL > openPrice))
+                    if(currentPrice <= triggerPrice && currentSL > openPrice)
                     {
                         double newSL = openPrice - (atrM5[0] * 0.1); // Small buffer below entry
                         if(trade.PositionModify(positionInfo.Ticket(), newSL, currentTP))
