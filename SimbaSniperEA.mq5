@@ -1463,7 +1463,7 @@ double CalculateDynamicRisk()
     if(winRate < 0.4) // Losing streak
         return RiskPercentage * 0.5; // Reduce risk by half
     else if(winRate > 0.6) // Winning streak
-        return MathMin(RiskPercentage * 1.2, RiskPercentage * 1.5); // Increase risk (capped at 1.5x)
+        return RiskPercentage * 1.2; // Increase risk by 20% (capped)
     
     return RiskPercentage;
 }
@@ -1581,7 +1581,7 @@ void ManageOpenPositions()
                 {
                     double newSL = currentPrice + trailingDistance;
                     // Only move SL down, never up, and only if it's below break-even
-                    if((newSL < currentSL || currentSL == 0) && newSL < openPrice)
+                    if(newSL < currentSL && newSL < openPrice)
                     {
                         if(trade.PositionModify(positionInfo.Ticket(), newSL, currentTP))
                         {
