@@ -132,6 +132,7 @@ input bool Breakout_RequireVolumeExpansion = true; // Breakout: Require volume e
 input double Breakout_VolumeMultiplier = 1.5;      // Breakout: Volume expansion multiplier
 input bool Breakout_RequireATRExpansion = true;    // Breakout: Require ATR expansion
 input double Breakout_ATRMultiplier = 1.5;         // Breakout: ATR expansion multiplier
+input int Breakout_ATRAveragePeriod = 14;          // Breakout: ATR average period for expansion check
 
 //--- Trading Sessions
 input group "=== Trading Sessions ==="
@@ -961,7 +962,7 @@ int AnalyzeBOSStrategy()
     
     // Get recent swing points on M5
     double swingHigh = -1;
-    double swingLow = 999999;
+    double swingLow = PRICE_UNSET;
     
     for(int i = 2; i < SwingLookback; i++)
     {
@@ -1175,23 +1176,24 @@ int AnalyzeBreakoutStrategy()
     // Check ATR expansion if required
     if(Breakout_RequireATRExpansion)
     {
-        if(CopyBuffer(atrM5Handle, 0, 0, 2, atrM5) != 2)
+        // Copy ATR values for current and historical comparison
+        double atrValues[];
+        ArraySetAsSeries(atrValues, true);
+        int atrBarsNeeded = Breakout_ATRAveragePeriod + 1;
+        
+        if(CopyBuffer(atrM5Handle, 0, 0, atrBarsNeeded, atrValues) != atrBarsNeeded)
             return 0;
         
-        // Calculate average ATR from recent bars
+        // Calculate average ATR from recent bars (excluding current)
         double avgATR = 0;
-        int avgBars = 14;
-        for(int i = 1; i <= avgBars && i < Bars(_Symbol, M5_Timeframe); i++)
+        for(int i = 1; i < atrBarsNeeded; i++)
         {
-            double atrValue[];
-            ArraySetAsSeries(atrValue, true);
-            if(CopyBuffer(atrM5Handle, 0, i, 1, atrValue) == 1)
-                avgATR += atrValue[0];
+            avgATR += atrValues[i];
         }
-        avgATR /= avgBars;
+        avgATR /= Breakout_ATRAveragePeriod;
         
         // Current ATR must be greater than avg ATR * multiplier
-        if(atrM5[0] < avgATR * Breakout_ATRMultiplier)
+        if(atrValues[0] < avgATR * Breakout_ATRMultiplier)
             return 0;
     }
     
