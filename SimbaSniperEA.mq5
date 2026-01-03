@@ -14,6 +14,10 @@
 #include <Trade\PositionInfo.mqh>
 #include <Trade\AccountInfo.mqh>
 
+// Custom modules
+#include "Include/RiskManager.mqh"
+#include "Include/PerformanceTracker.mqh"
+
 //+------------------------------------------------------------------+
 //| Input Parameters                                                 |
 //+------------------------------------------------------------------+
@@ -30,12 +34,21 @@ input bool UseM1Precision = false;                 // Use M1 for precision entri
 input group "=== Risk Management ==="
 input double RiskPercentage = 1.0;                 // Risk per trade (%)
 input double MaxDailyLossPercent = 3.0;            // Maximum daily loss (%)
+input double MaxDrawdownPercent = 10.0;            // Maximum drawdown (%)
 input double MinRiskRewardRatio = 2.5;             // Minimum Risk/Reward Ratio
 input int MaxPositions = 1;                        // Maximum concurrent positions
+input int MaxTradesPerHour = 3;                    // Maximum trades per hour (exposure limit)
 input bool UseDynamicRR = false;                   // Use dynamic R:R based on volatility
 input double DynamicRR_Multiplier = 1.0;           // Dynamic R:R volatility multiplier
 input bool UsePartialPositions = false;            // Use partial position scaling
 input double PartialEntry_Percent = 50.0;          // Initial position size (% of full size)
+
+//--- Advanced Risk Management
+input group "=== Advanced Risk Management ==="
+input bool UseStreakAdjustment = true;             // Adjust risk based on win/loss streak
+input bool UseDrawdownAdjustment = true;           // Adjust risk based on drawdown
+input bool UseVolatilityRiskAdjustment = true;     // Adjust risk based on volatility regime
+
 // NOTE: Time-based exit parameters below are prepared for future implementation
 // TODO: Implement time-based exit logic in OnTick() to check position age and close if thresholds exceeded
 input int MaxHoldingTimeBars = 0;                  // [FUTURE] Max holding time in bars (0 = no limit)
@@ -61,6 +74,13 @@ input bool UseBreakEvenStop = true;                // Enable break-even stop-los
 input double BreakEvenTriggerRatio = 0.5;          // Break-even trigger (ratio of TP distance)
 input bool UseTrailingStop = true;                 // Enable trailing stop-loss
 input double TrailingStopATRMultiplier = 1.0;      // Trailing stop ATR multiplier
+
+//--- Performance Analytics
+input group "=== Performance Analytics ==="
+input bool EnablePerformanceTracking = true;       // Enable detailed performance tracking
+input bool TrackMAE_MFE = true;                    // Track Maximum Adverse/Favorable Excursion
+input bool ShowSessionStats = true;                // Show session-based statistics
+input bool ShowSetupTypeStats = true;              // Show setup type statistics
 
 //--- Diagnostics and Logging
 input group "=== Diagnostics ==="
@@ -140,6 +160,10 @@ input color DashboardTextColor = clrWhite;         // Dashboard Text Color
 CTrade trade;
 CPositionInfo positionInfo;
 CAccountInfo accountInfo;
+
+// Advanced modules
+CRiskManager *riskManager;
+CPerformanceTracker *perfTracker;
 
 // ATR Handles for each timeframe
 int atrH4Handle, atrH1Handle, atrM5Handle, atrM1Handle;
@@ -243,7 +267,7 @@ string validationPointNames[11] = {
 // Constants
 #define PRICE_UNSET 999999.0
 #define DASHBOARD_WIDTH 380
-#define DASHBOARD_HEIGHT 545
+#define DASHBOARD_HEIGHT 620
 
 // Session tracking
 enum SESSION_TYPE { SESSION_ASIAN, SESSION_LONDON, SESSION_NEWYORK, SESSION_NONE };
@@ -254,6 +278,13 @@ SESSION_TYPE currentSession = SESSION_NONE;
 //+------------------------------------------------------------------+
 int OnInit()
 {
+    // Initialize advanced modules
+    riskManager = new CRiskManager();
+    riskManager.Init(RiskPercentage, MaxDailyLossPercent, MaxDrawdownPercent,
+                     UseStreakAdjustment, UseDrawdownAdjustment, UseVolatilityRiskAdjustment);
+    
+    perfTracker = new CPerformanceTracker();
+    
     // Initialize ATR indicators for each timeframe
     atrH4Handle = iATR(_Symbol, H4_Timeframe, ATR_Period);
     atrH1Handle = iATR(_Symbol, H1_Timeframe, ATR_Period);
@@ -314,6 +345,12 @@ int OnInit()
 //+------------------------------------------------------------------+
 void OnDeinit(const int reason)
 {
+    // Clean up advanced modules
+    if(CheckPointer(riskManager) == POINTER_DYNAMIC)
+        delete riskManager;
+    if(CheckPointer(perfTracker) == POINTER_DYNAMIC)
+        delete perfTracker;
+    
     // Release indicators
     IndicatorRelease(atrH4Handle);
     IndicatorRelease(atrH1Handle);
@@ -355,6 +392,13 @@ void OnTick()
     {
         lastBarTime = currentBarTime;
         
+        // Update risk manager volatility regime
+        if(CheckPointer(riskManager) == POINTER_DYNAMIC && ArraySize(atrH1) >= 3)
+        {
+            double avgATR = (atrH1[0] + atrH1[1] + atrH1[2]) / 3.0;
+            riskManager.UpdateVolatilityRegime(atrH1[0], avgATR);
+        }
+        
         // Update market structure analysis
         AnalyzeH4Trend();
         DetectH1Zones();
@@ -364,7 +408,17 @@ void OnTick()
         // Check for entry opportunities
         if(!tradingPaused && CountOpenPositions() < MaxPositions)
         {
-            if(CheckDailyLossLimit())
+            // Check risk manager exposure limits
+            bool canTrade = true;
+            if(CheckPointer(riskManager) == POINTER_DYNAMIC)
+                canTrade = riskManager.CanOpenPosition(MaxTradesPerHour);
+            
+            if(!canTrade)
+            {
+                if(EnableDetailedLogging)
+                    Print("Trading restricted: Hourly limit or drawdown exceeded");
+            }
+            else if(CheckDailyLossLimit())
             {
                 int signal = AnalyzeEntryOpportunity();
                 
@@ -377,6 +431,21 @@ void OnTick()
             {
                 tradingPaused = true;
                 Print("Trading paused: Daily loss limit reached");
+            }
+        }
+    }
+    
+    // Update MAE/MFE for current position
+    if(EnablePerformanceTracking && TrackMAE_MFE && CheckPointer(perfTracker) == POINTER_DYNAMIC)
+    {
+        if(PositionsTotal() > 0 && positionInfo.SelectByIndex(0))
+        {
+            if(positionInfo.Magic() == 0 || positionInfo.Symbol() == _Symbol)
+            {
+                double currentBid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+                double currentAsk = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+                bool isBuy = (positionInfo.Type() == POSITION_TYPE_BUY);
+                perfTracker.UpdateCurrentPosition(currentBid, currentAsk, isBuy);
             }
         }
     }
@@ -1664,6 +1733,17 @@ void ExecuteBuyOrder()
         dailyTrades++;
         Print(StringFormat("BUY order executed at %.2f, SL: %.2f, TP: %.2f, Lot: %.2f, Validation: %d/11", 
               ask, sl, tp, lotSize, currentValidation.totalPoints));
+        
+        // Notify risk manager of new trade
+        if(CheckPointer(riskManager) == POINTER_DYNAMIC)
+            riskManager.OnTradeOpen();
+        
+        // Start tracking position in performance tracker
+        if(EnablePerformanceTracking && CheckPointer(perfTracker) == POINTER_DYNAMIC)
+        {
+            ulong ticket = trade.ResultOrder();
+            perfTracker.StartTrackingPosition(ticket, ask, sl, tp, TimeCurrent());
+        }
     }
     else
     {
@@ -1745,6 +1825,17 @@ void ExecuteSellOrder()
         dailyTrades++;
         Print(StringFormat("SELL order executed at %.2f, SL: %.2f, TP: %.2f, Lot: %.2f, Validation: %d/11", 
               bid, sl, tp, lotSize, currentValidation.totalPoints));
+        
+        // Notify risk manager of new trade
+        if(CheckPointer(riskManager) == POINTER_DYNAMIC)
+            riskManager.OnTradeOpen();
+        
+        // Start tracking position in performance tracker
+        if(EnablePerformanceTracking && CheckPointer(perfTracker) == POINTER_DYNAMIC)
+        {
+            ulong ticket = trade.ResultOrder();
+            perfTracker.StartTrackingPosition(ticket, bid, sl, tp, TimeCurrent());
+        }
     }
     else
     {
@@ -1851,6 +1942,21 @@ double CalculateDynamicRisk()
 //+------------------------------------------------------------------+
 double CalculateLotSize(double stopLossPoints)
 {
+    // Use RiskManager for dynamic position sizing
+    if(CheckPointer(riskManager) == POINTER_DYNAMIC)
+    {
+        double stopLossDistance = stopLossPoints * SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+        double lotSize = riskManager.CalculatePositionSize(stopLossDistance, _Symbol);
+        
+        // Ensure lot size is valid
+        double minLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+        if(lotSize < minLot)
+            lotSize = minLot;
+        
+        return lotSize;
+    }
+    
+    // Fallback to original calculation if risk manager not available
     double balance = accountInfo.Balance();
     
     // Use dynamic risk adjustment
@@ -2152,7 +2258,11 @@ void CreateDashboard()
     CreateLabel(prefix + "ATRH1", "ATR H1: 0.00", DashboardX + 10, DashboardY + 420, 8, DashboardTextColor);
     CreateLabel(prefix + "ATRM5", "ATR M5: 0.00", DashboardX + 10, DashboardY + 445, 8, DashboardTextColor);
     CreateLabel(prefix + "Status", "Status: Active", DashboardX + 10, DashboardY + 470, 9, clrLime);
-    CreateLabel(prefix + "Error", "", DashboardX + 10, DashboardY + 495, 7, clrRed);
+    CreateLabel(prefix + "RiskInfo", "Risk: Loading...", DashboardX + 10, DashboardY + 495, 8, clrAqua);
+    CreateLabel(prefix + "PerfInfo", "Performance: Loading...", DashboardX + 10, DashboardY + 520, 8, clrAqua);
+    CreateLabel(prefix + "LondonStats", "", DashboardX + 10, DashboardY + 545, 7, DashboardTextColor);
+    CreateLabel(prefix + "NYStats", "", DashboardX + 10, DashboardY + 565, 7, DashboardTextColor);
+    CreateLabel(prefix + "Error", "", DashboardX + 10, DashboardY + 590, 7, clrRed);
 }
 
 //+------------------------------------------------------------------+
@@ -2315,6 +2425,29 @@ void UpdateDashboard()
     ObjectSetString(0, prefix + "Status", OBJPROP_TEXT, statusText);
     ObjectSetInteger(0, prefix + "Status", OBJPROP_COLOR, statusColor);
     
+    // Risk Manager Info
+    if(CheckPointer(riskManager) == POINTER_DYNAMIC)
+    {
+        string riskInfo = StringFormat("Risk: %.2f%% | DD: %.1f%% | Streak: W%d L%d",
+                                       riskManager.GetAdjustedRiskPercent(),
+                                       riskManager.GetCurrentDrawdown(),
+                                       riskManager.GetConsecutiveWins(),
+                                       riskManager.GetConsecutiveLosses());
+        ObjectSetString(0, prefix + "RiskInfo", OBJPROP_TEXT, riskInfo);
+    }
+    
+    // Performance Tracker Info
+    if(EnablePerformanceTracking && CheckPointer(perfTracker) == POINTER_DYNAMIC)
+    {
+        ObjectSetString(0, prefix + "PerfInfo", OBJPROP_TEXT, perfTracker.GetDiagnosticSummary());
+        
+        if(ShowSessionStats)
+        {
+            ObjectSetString(0, prefix + "LondonStats", OBJPROP_TEXT, perfTracker.GetSessionSummary("LONDON"));
+            ObjectSetString(0, prefix + "NYStats", OBJPROP_TEXT, perfTracker.GetSessionSummary("NEWYORK"));
+        }
+    }
+    
     // Error
     ObjectSetString(0, prefix + "Error", OBJPROP_TEXT, lastErrorMsg);
 }
@@ -2345,6 +2478,11 @@ void DeleteDashboard()
     ObjectDelete(0, prefix + "ATRH1");
     ObjectDelete(0, prefix + "ATRM5");
     ObjectDelete(0, prefix + "Status");
+    ObjectDelete(0, prefix + "RiskInfo");
+    ObjectDelete(0, prefix + "PerfInfo");
+    ObjectDelete(0, prefix + "LondonStats");
+    ObjectDelete(0, prefix + "NYStats");
+    ObjectDelete(0, prefix + "NearMiss");
     ObjectDelete(0, prefix + "Error");
 }
 //+------------------------------------------------------------------+
