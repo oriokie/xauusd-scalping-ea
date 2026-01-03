@@ -46,7 +46,7 @@ input int TimeBasedExit_Bars = 100;                // [FUTURE] Exit if no moveme
 input group "=== ATR Settings ==="
 input int ATR_Period = 14;                         // ATR Period
 input double ATR_ZoneMultiplier = 1.5;             // ATR multiplier for zone validation
-input double ATR_StopLossMultiplier = 2.0;         // Stop Loss ATR Multiplier
+input double ATR_StopLossMultiplier = 2.5;         // Stop Loss ATR Multiplier (Increased for gold volatility)
 input double ATR_TakeProfitMultiplier = 4.0;       // Take Profit ATR Multiplier
 input double ATR_BreakoutMultiplier = 1.5;         // Breakout detection ATR multiplier
 
@@ -70,7 +70,12 @@ input bool ShowValidationDetails = true;           // Show validation details on
 
 //--- Entry Validation (11-Point System) - UPDATED for better trade execution
 input group "=== 11-Point Entry Validation ==="
-input int MinValidationPoints = 3;                 // Minimum validation points required (essentials: H4 Trend + RR + Session)
+input int MinValidationPoints = 6;                 // Minimum validation points required (increased for better entry quality)
+input bool UseWeightedScoring = true;              // Use weighted validation scoring (recommended)
+input double H4TrendWeight = 3.0;                  // H4 Trend weight multiplier (CRITICAL)
+input double RiskRewardWeight = 2.0;               // Risk/Reward weight multiplier (IMPORTANT)
+input double SessionWeight = 1.5;                  // Session filter weight multiplier
+input double ZoneWeight = 1.0;                     // Zone/Structure weight multiplier (default)
 input bool UseEssentialOnly = false;               // Use only essential validations (H4 Trend + Session + Valid RR)
 input bool Require_H4_Trend = true;                // 1. H4 Trend Alignment (ESSENTIAL)
 input bool Require_H1_Zone = false;                // 2. H1 Zone Present (OPTIONAL - was required)
@@ -218,6 +223,8 @@ struct EntryValidation {
     bool breakoutDetected;
     bool asianLevelValid;
     int totalPoints;
+    double weightedScore;  // Weighted validation score
+};
 };
 
 EntryValidation currentValidation;
@@ -849,6 +856,14 @@ int AnalyzeEntryOpportunity()
     // Reset validation
     ZeroMemory(currentValidation);
     currentValidation.totalPoints = 0;
+    currentValidation.weightedScore = 0.0;
+    
+    // Early filter: Daily loss limit circuit breaker (extra safety check)
+    if(!CheckDailyLossLimit())
+    {
+        lastErrorMsg = "Daily loss limit reached - trading suspended";
+        return 0;
+    }
     
     // Early filter: Spread check
     if(UseSpreadFilter)
@@ -909,6 +924,10 @@ int AnalyzeEntryOpportunity()
     {
         currentValidation.h4TrendValid = true;
         currentValidation.totalPoints++;
+        if(UseWeightedScoring)
+            currentValidation.weightedScore += H4TrendWeight;
+        else
+            currentValidation.weightedScore += 1.0;
     }
     
     // 2. H1 Zone Present
@@ -921,6 +940,7 @@ int AnalyzeEntryOpportunity()
         {
             currentValidation.h1ZoneValid = true;
             currentValidation.totalPoints++;
+            currentValidation.weightedScore += (UseWeightedScoring ? ZoneWeight : 1.0);
             break;
         }
     }
@@ -928,12 +948,18 @@ int AnalyzeEntryOpportunity()
     // 3. Break of Structure (BOS) on M5
     currentValidation.bosDetected = DetectBreakOfStructure();
     if(currentValidation.bosDetected)
+    {
         currentValidation.totalPoints++;
+        currentValidation.weightedScore += (UseWeightedScoring ? ZoneWeight : 1.0);
+    }
     
     // 4. Liquidity Sweep (Optional)
     currentValidation.liquiditySweep = DetectLiquiditySweep();
     if(currentValidation.liquiditySweep)
+    {
         currentValidation.totalPoints++;
+        currentValidation.weightedScore += (UseWeightedScoring ? ZoneWeight : 1.0);
+    }
     
     // 5. Fair Value Gap Present (Optional)
     for(int i = 0; i < ArraySize(h1FVGs); i++)
@@ -945,6 +971,7 @@ int AnalyzeEntryOpportunity()
             {
                 currentValidation.fvgPresent = true;
                 currentValidation.totalPoints++;
+                currentValidation.weightedScore += (UseWeightedScoring ? ZoneWeight : 1.0);
                 break;
             }
         }
@@ -960,6 +987,7 @@ int AnalyzeEntryOpportunity()
             {
                 currentValidation.orderBlockValid = true;
                 currentValidation.totalPoints++;
+                currentValidation.weightedScore += (UseWeightedScoring ? ZoneWeight : 1.0);
                 break;
             }
         }
@@ -968,12 +996,18 @@ int AnalyzeEntryOpportunity()
     // 7. ATR Zone Validation
     currentValidation.atrZoneValid = ValidateATRZone();
     if(currentValidation.atrZoneValid)
+    {
         currentValidation.totalPoints++;
+        currentValidation.weightedScore += (UseWeightedScoring ? ZoneWeight : 1.0);
+    }
     
     // 8. Breakout Detection
     currentValidation.breakoutDetected = DetectBreakout();
     if(currentValidation.breakoutDetected)
+    {
         currentValidation.totalPoints++;
+        currentValidation.weightedScore += (UseWeightedScoring ? ZoneWeight : 1.0);
+    }
     
     // 9. Asian Level Validation
     if(UseAsianHighLow && asianLevels.isValid)
@@ -990,6 +1024,7 @@ int AnalyzeEntryOpportunity()
         {
             currentValidation.asianLevelValid = true;
             currentValidation.totalPoints++;
+            currentValidation.weightedScore += (UseWeightedScoring ? ZoneWeight : 1.0);
         }
     }
     
@@ -1000,12 +1035,16 @@ int AnalyzeEntryOpportunity()
     {
         currentValidation.validRiskReward = true;
         currentValidation.totalPoints++;
+        currentValidation.weightedScore += (UseWeightedScoring ? RiskRewardWeight : 1.0);
     }
     
     // 11. Session Filter
     currentValidation.sessionActive = IsWithinTradingSession();
     if(currentValidation.sessionActive)
+    {
         currentValidation.totalPoints++;
+        currentValidation.weightedScore += (UseWeightedScoring ? SessionWeight : 1.0);
+    }
     
     // Track validation failures for diagnostics
     if(EnableDetailedLogging)
@@ -1358,6 +1397,20 @@ bool IsVolatilityAcceptable()
     // Avoid if ATR is too high (>150% average) or too low (<50% average)
     if(currentATR > avgATR * 1.5 || currentATR < avgATR * 0.5)
         return false;
+    
+    // Additional check: During high volatility, verify spread is not excessively wide
+    if(UseSpreadFilter && currentATR > avgATR * 1.2)
+    {
+        double spread = SymbolInfoInteger(_Symbol, SYMBOL_SPREAD) * SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+        double spreadPoints = spread / SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+        
+        // During high volatility, use stricter spread limit (75% of max)
+        if(spreadPoints > MaxSpreadPoints * 0.75)
+        {
+            lastErrorMsg = StringFormat("High volatility with wide spread: %.1f points", spreadPoints);
+            return false;
+        }
+    }
         
     return true;
 }
@@ -2175,6 +2228,8 @@ void UpdateDashboard()
     // Validation with strategy mode
     string validationText = StringFormat("Validation: %d/11 (Min:%d)", 
                                          currentValidation.totalPoints, MinValidationPoints);
+    if(UseWeightedScoring)
+        validationText += StringFormat(" [Score:%.1f]", currentValidation.weightedScore);
     if(UseEssentialOnly)
         validationText += " [Essential Only]";
     else if(EntryStrategy == STRATEGY_BREAKOUT)
