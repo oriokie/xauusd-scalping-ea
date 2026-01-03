@@ -50,6 +50,8 @@ input int FVG_MinGapPoints = 20;                   // Minimum FVG gap in points
 input bool UseSwingPointSL = true;                 // Use swing points for stop-loss
 input bool UseBreakEvenStop = true;                // Enable break-even stop-loss
 input double BreakEvenTriggerRatio = 0.5;          // Break-even trigger (ratio of TP distance)
+input bool UseTrailingStop = true;                 // Enable trailing stop-loss
+input double TrailingStopATRMultiplier = 1.0;      // Trailing stop ATR multiplier
 
 //--- Entry Validation (9-Point System)
 input group "=== 9-Point Entry Validation ==="
@@ -100,6 +102,10 @@ CAccountInfo accountInfo;
 // ATR Handles for each timeframe
 int atrH4Handle, atrH1Handle, atrM5Handle, atrM1Handle;
 double atrH4[], atrH1[], atrM5[], atrM1[];
+
+// EMA Handles for trend confirmation
+int ema20H4Handle, ema50H4Handle;
+double ema20H4[], ema50H4[];
 
 // Market Structure Variables
 enum TREND_DIRECTION { TREND_BULLISH, TREND_BEARISH, TREND_NEUTRAL };
@@ -202,10 +208,15 @@ int OnInit()
     if(UseM1Precision)
         atrM1Handle = iATR(_Symbol, M1_Timeframe, ATR_Period);
     
+    // Initialize EMA indicators for H4 trend confirmation
+    ema20H4Handle = iMA(_Symbol, H4_Timeframe, 20, 0, MODE_EMA, PRICE_CLOSE);
+    ema50H4Handle = iMA(_Symbol, H4_Timeframe, 50, 0, MODE_EMA, PRICE_CLOSE);
+    
     if(atrH4Handle == INVALID_HANDLE || atrH1Handle == INVALID_HANDLE || 
-       atrM5Handle == INVALID_HANDLE)
+       atrM5Handle == INVALID_HANDLE || ema20H4Handle == INVALID_HANDLE || 
+       ema50H4Handle == INVALID_HANDLE)
     {
-        Print("Error creating ATR indicators");
+        Print("Error creating indicators");
         return(INIT_FAILED);
     }
     
@@ -213,6 +224,8 @@ int OnInit()
     ArraySetAsSeries(atrH4, true);
     ArraySetAsSeries(atrH1, true);
     ArraySetAsSeries(atrM5, true);
+    ArraySetAsSeries(ema20H4, true);
+    ArraySetAsSeries(ema50H4, true);
     if(UseM1Precision) ArraySetAsSeries(atrM1, true);
     
     // Initialize arrays
@@ -251,6 +264,8 @@ void OnDeinit(const int reason)
     IndicatorRelease(atrH4Handle);
     IndicatorRelease(atrH1Handle);
     IndicatorRelease(atrM5Handle);
+    IndicatorRelease(ema20H4Handle);
+    IndicatorRelease(ema50H4Handle);
     if(UseM1Precision) IndicatorRelease(atrM1Handle);
     
     // Remove dashboard
@@ -349,6 +364,19 @@ bool UpdateATRBuffers()
         return false;
     }
     
+    // Copy EMA buffers for trend confirmation
+    if(CopyBuffer(ema20H4Handle, 0, 0, 3, ema20H4) <= 0)
+    {
+        lastErrorMsg = "Failed to copy EMA20 H4 data";
+        return false;
+    }
+    
+    if(CopyBuffer(ema50H4Handle, 0, 0, 3, ema50H4) <= 0)
+    {
+        lastErrorMsg = "Failed to copy EMA50 H4 data";
+        return false;
+    }
+    
     lastErrorMsg = "";
     return true;
 }
@@ -437,6 +465,28 @@ void AnalyzeH4Trend()
             h4Trend = TREND_BEARISH;
         else
             h4Trend = TREND_NEUTRAL;
+    }
+    
+    // Confirm trend with EMA alignment
+    double currentClose = iClose(_Symbol, H4_Timeframe, 0);
+    
+    // For bullish trend: price > EMA20 > EMA50
+    if(h4Trend == TREND_BULLISH)
+    {
+        if(!(currentClose > ema20H4[0] && ema20H4[0] > ema50H4[0]))
+        {
+            h4Trend = TREND_NEUTRAL;
+            lastErrorMsg = "H4 bullish swing structure but EMA not aligned";
+        }
+    }
+    // For bearish trend: price < EMA20 < EMA50
+    else if(h4Trend == TREND_BEARISH)
+    {
+        if(!(currentClose < ema20H4[0] && ema20H4[0] < ema50H4[0]))
+        {
+            h4Trend = TREND_NEUTRAL;
+            lastErrorMsg = "H4 bearish swing structure but EMA not aligned";
+        }
     }
     
     // Check for displacement (strong directional move)
@@ -657,6 +707,13 @@ int AnalyzeEntryOpportunity()
     // Reset validation
     ZeroMemory(currentValidation);
     currentValidation.totalPoints = 0;
+    
+    // Early filter: Check volatility conditions
+    if(!IsVolatilityAcceptable())
+    {
+        lastErrorMsg = "Volatility outside acceptable range";
+        return 0;
+    }
     
     // 1. H4 Trend Alignment
     if(h4Trend == TREND_BULLISH || h4Trend == TREND_BEARISH)
@@ -948,6 +1005,25 @@ bool ValidateATRZone()
     }
     
     return false;
+}
+
+//+------------------------------------------------------------------+
+//| Check if volatility is within acceptable range                   |
+//+------------------------------------------------------------------+
+bool IsVolatilityAcceptable()
+{
+    // Ensure we have enough ATR data
+    if(ArraySize(atrH1) < 3)
+        return true; // Default to true if not enough data
+    
+    double currentATR = atrH1[0];
+    double avgATR = (atrH1[0] + atrH1[1] + atrH1[2]) / 3.0;
+    
+    // Avoid if ATR is too high (>150% average) or too low (<50% average)
+    if(currentATR > avgATR * 1.5 || currentATR < avgATR * 0.5)
+        return false;
+        
+    return true;
 }
 
 //+------------------------------------------------------------------+
@@ -1255,6 +1331,43 @@ void ManageOpenPositions()
                         if(trade.PositionModify(positionInfo.Ticket(), newSL, currentTP))
                         {
                             Print(StringFormat("Break-even SL set for SELL #%d at %.2f", 
+                                  positionInfo.Ticket(), newSL));
+                        }
+                    }
+                }
+            }
+            
+            // Implement trailing stop-loss
+            if(UseTrailingStop)
+            {
+                double openPrice = positionInfo.PriceOpen();
+                double currentSL = positionInfo.StopLoss();
+                double currentTP = positionInfo.TakeProfit();
+                double currentPrice = positionInfo.PriceCurrent();
+                double trailingDistance = atrM5[0] * TrailingStopATRMultiplier;
+                
+                if(positionInfo.Type() == POSITION_TYPE_BUY)
+                {
+                    double newSL = currentPrice - trailingDistance;
+                    // Only move SL up, never down, and only if it's above break-even
+                    if(newSL > currentSL && newSL > openPrice)
+                    {
+                        if(trade.PositionModify(positionInfo.Ticket(), newSL, currentTP))
+                        {
+                            Print(StringFormat("Trailing SL updated for BUY #%d to %.2f", 
+                                  positionInfo.Ticket(), newSL));
+                        }
+                    }
+                }
+                else if(positionInfo.Type() == POSITION_TYPE_SELL)
+                {
+                    double newSL = currentPrice + trailingDistance;
+                    // Only move SL down, never up, and only if it's below break-even
+                    if((newSL < currentSL || currentSL == 0) && newSL < openPrice)
+                    {
+                        if(trade.PositionModify(positionInfo.Ticket(), newSL, currentTP))
+                        {
+                            Print(StringFormat("Trailing SL updated for SELL #%d to %.2f", 
                                   positionInfo.Ticket(), newSL));
                         }
                     }
