@@ -36,9 +36,10 @@ input bool UseDynamicRR = false;                   // Use dynamic R:R based on v
 input double DynamicRR_Multiplier = 1.0;           // Dynamic R:R volatility multiplier
 input bool UsePartialPositions = false;            // Use partial position scaling
 input double PartialEntry_Percent = 50.0;          // Initial position size (% of full size)
-input int MaxHoldingTimeBars = 0;                  // Max holding time in bars (0 = no limit)
-input bool UseTimeBasedExit = false;               // Enable time-based exit
-input int TimeBasedExit_Bars = 100;                // Exit if no movement after X bars
+// NOTE: Time-based exit parameters below are prepared for future implementation
+input int MaxHoldingTimeBars = 0;                  // [FUTURE] Max holding time in bars (0 = no limit)
+input bool UseTimeBasedExit = false;               // [FUTURE] Enable time-based exit
+input int TimeBasedExit_Bars = 100;                // [FUTURE] Exit if no movement after X bars
 
 //--- ATR Settings
 input group "=== ATR Settings ==="
@@ -233,6 +234,8 @@ string validationPointNames[11] = {
 
 // Constants
 #define PRICE_UNSET 999999.0
+#define DASHBOARD_WIDTH 380
+#define DASHBOARD_HEIGHT 545
 
 // Session tracking
 enum SESSION_TYPE { SESSION_ASIAN, SESSION_LONDON, SESSION_NEWYORK, SESSION_NONE };
@@ -866,9 +869,9 @@ int AnalyzeEntryOpportunity()
         int currentHour = dt.hour;
         
         // Check if we're in the avoid trading hours
-        if(AvoidTradingHourEnd > AvoidTradingHourStart)
+        if(AvoidTradingHourEnd < AvoidTradingHourStart)
         {
-            // Normal range (e.g., 22-1 next day)
+            // Wrapped range spanning midnight (e.g., 22-1 means 22:00 to 01:00 next day)
             if(currentHour >= AvoidTradingHourStart || currentHour <= AvoidTradingHourEnd)
             {
                 lastErrorMsg = StringFormat("Time-of-day filter: avoiding trading at %02d:00 GMT", currentHour);
@@ -877,7 +880,7 @@ int AnalyzeEntryOpportunity()
         }
         else
         {
-            // Wrapped range (e.g., 8-17)
+            // Standard same-day range (e.g., 8-17 means 08:00 to 17:00 same day)
             if(currentHour >= AvoidTradingHourStart && currentHour <= AvoidTradingHourEnd)
             {
                 lastErrorMsg = StringFormat("Time-of-day filter: avoiding trading at %02d:00 GMT", currentHour);
@@ -1548,8 +1551,13 @@ void ExecuteBuyOrder()
     if(UseDynamicRR)
     {
         double avgATR = (atrH4[0] + atrH1[0] + atrM5[0]) / 3.0;
-        double volatilityRatio = atrM5[0] / avgATR;
-        tpDistance = atrM5[0] * ATR_TakeProfitMultiplier * volatilityRatio * DynamicRR_Multiplier;
+        
+        // Prevent division by zero
+        if(avgATR > 0)
+        {
+            double volatilityRatio = atrM5[0] / avgATR;
+            tpDistance = atrM5[0] * ATR_TakeProfitMultiplier * volatilityRatio * DynamicRR_Multiplier;
+        }
     }
     
     // Check for swing point SL
@@ -1624,8 +1632,13 @@ void ExecuteSellOrder()
     if(UseDynamicRR)
     {
         double avgATR = (atrH4[0] + atrH1[0] + atrM5[0]) / 3.0;
-        double volatilityRatio = atrM5[0] / avgATR;
-        tpDistance = atrM5[0] * ATR_TakeProfitMultiplier * volatilityRatio * DynamicRR_Multiplier;
+        
+        // Prevent division by zero
+        if(avgATR > 0)
+        {
+            double volatilityRatio = atrM5[0] / avgATR;
+            tpDistance = atrM5[0] * ATR_TakeProfitMultiplier * volatilityRatio * DynamicRR_Multiplier;
+        }
     }
     
     // Check for swing point SL
@@ -1698,11 +1711,21 @@ double CalculatePotentialRR(bool isBuySignal)
     {
         // Calculate volatility ratio (current ATR vs average)
         double avgATR = (atrH4[0] + atrH1[0] + atrM5[0]) / 3.0;
-        double volatilityRatio = atrM5[0] / avgATR;
         
-        // Adjust TP distance based on volatility
-        // Higher volatility = wider targets
-        tpDistance = atrM5[0] * ATR_TakeProfitMultiplier * volatilityRatio * DynamicRR_Multiplier;
+        // Prevent division by zero
+        if(avgATR > 0)
+        {
+            double volatilityRatio = atrM5[0] / avgATR;
+            
+            // Adjust TP distance based on volatility
+            // Higher volatility = wider targets
+            tpDistance = atrM5[0] * ATR_TakeProfitMultiplier * volatilityRatio * DynamicRR_Multiplier;
+        }
+        else
+        {
+            // Fallback to standard TP if avgATR is zero
+            tpDistance = atrM5[0] * ATR_TakeProfitMultiplier;
+        }
     }
     
     if(isBuySignal)
@@ -2043,12 +2066,12 @@ void CreateDashboard()
 {
     string prefix = "SimbaSniper_";
     
-    // Background - increased height to accommodate new fields
+    // Background - using constants for maintainability
     ObjectCreate(0, prefix + "BG", OBJ_RECTANGLE_LABEL, 0, 0, 0);
     ObjectSetInteger(0, prefix + "BG", OBJPROP_XDISTANCE, DashboardX);
     ObjectSetInteger(0, prefix + "BG", OBJPROP_YDISTANCE, DashboardY);
-    ObjectSetInteger(0, prefix + "BG", OBJPROP_XSIZE, 380);
-    ObjectSetInteger(0, prefix + "BG", OBJPROP_YSIZE, 545);
+    ObjectSetInteger(0, prefix + "BG", OBJPROP_XSIZE, DASHBOARD_WIDTH);
+    ObjectSetInteger(0, prefix + "BG", OBJPROP_YSIZE, DASHBOARD_HEIGHT);
     ObjectSetInteger(0, prefix + "BG", OBJPROP_BGCOLOR, DashboardBGColor);
     ObjectSetInteger(0, prefix + "BG", OBJPROP_BORDER_TYPE, BORDER_FLAT);
     ObjectSetInteger(0, prefix + "BG", OBJPROP_CORNER, CORNER_LEFT_UPPER);
