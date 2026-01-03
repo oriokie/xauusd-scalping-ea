@@ -37,6 +37,7 @@ input double DynamicRR_Multiplier = 1.0;           // Dynamic R:R volatility mul
 input bool UsePartialPositions = false;            // Use partial position scaling
 input double PartialEntry_Percent = 50.0;          // Initial position size (% of full size)
 // NOTE: Time-based exit parameters below are prepared for future implementation
+// TODO: Implement time-based exit logic in OnTick() to check position age and close if thresholds exceeded
 input int MaxHoldingTimeBars = 0;                  // [FUTURE] Max holding time in bars (0 = no limit)
 input bool UseTimeBasedExit = false;               // [FUTURE] Enable time-based exit
 input int TimeBasedExit_Bars = 100;                // [FUTURE] Exit if no movement after X bars
@@ -1552,8 +1553,8 @@ void ExecuteBuyOrder()
     {
         double avgATR = (atrH4[0] + atrH1[0] + atrM5[0]) / 3.0;
         
-        // Prevent division by zero
-        if(avgATR > 0)
+        // Prevent division by zero - use epsilon for floating point comparison
+        if(MathAbs(avgATR) > DBL_EPSILON)
         {
             double volatilityRatio = atrM5[0] / avgATR;
             tpDistance = atrM5[0] * ATR_TakeProfitMultiplier * volatilityRatio * DynamicRR_Multiplier;
@@ -1633,8 +1634,8 @@ void ExecuteSellOrder()
     {
         double avgATR = (atrH4[0] + atrH1[0] + atrM5[0]) / 3.0;
         
-        // Prevent division by zero
-        if(avgATR > 0)
+        // Prevent division by zero - use epsilon for floating point comparison
+        if(MathAbs(avgATR) > DBL_EPSILON)
         {
             double volatilityRatio = atrM5[0] / avgATR;
             tpDistance = atrM5[0] * ATR_TakeProfitMultiplier * volatilityRatio * DynamicRR_Multiplier;
@@ -1712,8 +1713,8 @@ double CalculatePotentialRR(bool isBuySignal)
         // Calculate volatility ratio (current ATR vs average)
         double avgATR = (atrH4[0] + atrH1[0] + atrM5[0]) / 3.0;
         
-        // Prevent division by zero
-        if(avgATR > 0)
+        // Prevent division by zero - use epsilon for floating point comparison
+        if(MathAbs(avgATR) > DBL_EPSILON)
         {
             double volatilityRatio = atrM5[0] / avgATR;
             
