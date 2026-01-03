@@ -52,13 +52,12 @@ input double TrailingStepATR = 0.5;          // Trailing Step ATR Multiplier
 
 //--- Trading Sessions
 input group "=== Trading Sessions ==="
-input bool TradeLondonSession = true;        // Trade London Session (08:00-17:00 GMT)
-input bool TradeNewYorkSession = true;       // Trade New York Session (13:00-22:00 GMT)
-input int LondonStartHour = 8;               // London Session Start Hour
-input int LondonEndHour = 17;                // London Session End Hour
-input int NewYorkStartHour = 13;             // New York Session Start Hour
-input int NewYorkEndHour = 22;               // New York Session End Hour
-input int SessionGMTOffset = 0;              // Broker GMT Offset for session times
+input bool TradeLondonSession = true;        // Trade London Session
+input bool TradeNewYorkSession = true;       // Trade New York Session
+input int LondonStartHour = 8;               // London Session Start Hour (in broker's local time)
+input int LondonEndHour = 17;                // London Session End Hour (in broker's local time)
+input int NewYorkStartHour = 13;             // New York Session Start Hour (in broker's local time)
+input int NewYorkEndHour = 22;               // New York Session End Hour (in broker's local time)
 
 //--- News Filter
 input group "=== News Filter ==="
@@ -215,13 +214,18 @@ void OnTick()
     // Check trading session
     if(!IsWithinTradingSession())
     {
-        // Also log when outside session to help debugging
+        // Log when outside session on new bar to help debugging
+        datetime currentBarTime = iTime(_Symbol, PERIOD_CURRENT, 0);
+        bool isNewBar = (currentBarTime != lastBarTime);
+        
         if(isNewBar)
         {
             MqlDateTime tm;
             TimeToStruct(TimeCurrent(), tm);
-            int currentHour = ((tm.hour + SessionGMTOffset) % 24 + 24) % 24;
-            Print("Outside trading session. Current hour (GMT adjusted): ", currentHour);
+            Print(StringFormat("Outside trading session. Current server time: %02d:%02d (Hour %d). London: %s (%d-%d), New York: %s (%d-%d)", 
+                  tm.hour, tm.min, tm.hour,
+                  TradeLondonSession ? "Enabled" : "Disabled", LondonStartHour, LondonEndHour,
+                  TradeNewYorkSession ? "Enabled" : "Disabled", NewYorkStartHour, NewYorkEndHour));
         }
         return;
     }
@@ -784,14 +788,10 @@ int CountOpenPositions()
 //+------------------------------------------------------------------+
 bool IsWithinTradingSession()
 {
-    // Use broker/server time with robust offset calculation
-    datetime now = TimeCurrent();
-    MqlDateTime tm;                        
-    TimeToStruct(now, tm);                 // Convert datetime to struct
+    // Use broker/server time directly without offset
+    MqlDateTime tm;
+    TimeToStruct(TimeCurrent(), tm);
     int currentHour = tm.hour;
-    
-    // Apply GMT offset with proper modulo to handle negative offsets
-    currentHour = ((currentHour + SessionGMTOffset) % 24 + 24) % 24;
     
     bool inLondon = false;
     bool inNewYork = false;

@@ -20,39 +20,37 @@ From the backtesting logs dated 2025.12.30:
 
 ## Changes Implemented
 
-### 1. Fixed `IsWithinTradingSession()` Function
-**File**: `XAUUSDScalpingEA.mq5` (Lines 776-789)
+### 1. Simplified `IsWithinTradingSession()` Function
+**File**: `XAUUSDScalpingEA.mq5` (Lines 775-797)
 
-**Before**:
+**Before (with confusing GMT offset)**:
 ```mql5
 bool IsWithinTradingSession()
 {
     // Use broker/server time with robust offset calculation
-    int currentHour = ((TimeHour(TimeCurrent()) + SessionGMTOffset) % 24 + 24) % 24;
-    // ...
-}
-```
-
-**After**:
-```mql5
-bool IsWithinTradingSession()
-{
-    // Use broker/server time with robust offset calculation
-    datetime now = TimeCurrent();
-    MqlDateTime tm;                        
-    TimeToStruct(now, tm);                 // Convert datetime to struct
     int currentHour = tm.hour;
-    
-    // Apply GMT offset with proper modulo to handle negative offsets
     currentHour = ((currentHour + SessionGMTOffset) % 24 + 24) % 24;
     // ...
 }
 ```
 
+**After (simplified to use broker time directly)**:
+```mql5
+bool IsWithinTradingSession()
+{
+    // Use broker/server time directly without offset
+    MqlDateTime tm;
+    TimeToStruct(TimeCurrent(), tm);
+    int currentHour = tm.hour;
+    // ... session checks
+}
+```
+
 **Improvement**: 
-- More reliable time handling using `TimeToStruct()`
-- Properly extracts hour from MqlDateTime structure
-- Consistent with the implementation pattern suggested in the problem statement
+- **Removed SessionGMTOffset parameter** - was confusing and backwards
+- Users now set session times directly in their broker's local time
+- More intuitive: if broker shows hour 10, and London session is 8-17, it's in session
+- Simpler configuration with fewer parameters
 
 ### 2. Stricter Entry Signal Logic
 **File**: `XAUUSDScalpingEA.mq5` (Lines 311-387)
@@ -136,19 +134,21 @@ Print("Warning: ATR-based SL too tight, using minimum SL distance: ", minSlDista
 ```
 
 ### 4. Enhanced Session Debugging
-**File**: `XAUUSDScalpingEA.mq5` (Lines 216-227)
+**File**: `XAUUSDScalpingEA.mq5` (Lines 214-231)
 
 **New Feature**:
 ```mql5
 if(!IsWithinTradingSession())
 {
-    // Also log when outside session to help debugging
+    // Log when outside session on new bar to help debugging
     if(isNewBar)
     {
         MqlDateTime tm;
         TimeToStruct(TimeCurrent(), tm);
-        int currentHour = ((tm.hour + SessionGMTOffset) % 24 + 24) % 24;
-        Print("Outside trading session. Current hour (GMT adjusted): ", currentHour);
+        Print(StringFormat("Outside trading session. Current server time: %02d:%02d (Hour %d, GMT). London: %s (%d-%d), New York: %s (%d-%d)", 
+              tm.hour, tm.min, tm.hour,
+              TradeLondonSession ? "Enabled" : "Disabled", LondonStartHour, LondonEndHour,
+              TradeNewYorkSession ? "Enabled" : "Disabled", NewYorkStartHour, NewYorkEndHour));
     }
     return;
 }
@@ -157,7 +157,8 @@ if(!IsWithinTradingSession())
 **Benefits**:
 - Helps identify session filtering issues
 - Logs only on new bar to avoid spam
-- Shows GMT-adjusted hour for verification
+- Shows current server time and session configuration
+- Makes it easy to verify session times match broker's time
 
 ## Expected Improvements
 
@@ -215,17 +216,19 @@ MaxPositions = 1 (focus on quality)
 
 ### If Not Trading at All
 - Check logs for "Outside trading session" messages
-- Verify `SessionGMTOffset` is correct for your broker
+- Verify session times (LondonStartHour, etc.) match your broker's local time
 - Ensure `TradeLondonSession` or `TradeNewYorkSession` is enabled
+- If broker is GMT+2 and London session is 08:00-17:00 GMT, set session to 10-19
+- If broker is GMT-5 and London session is 08:00-17:00 GMT, set session to 03-12
 
 ## Summary
 
 These changes transform the EA from an over-trading system to a selective, quality-focused scalper:
 
-✅ **Fixed**: `IsWithinTradingSession()` now uses robust time handling  
+✅ **Simplified**: Removed confusing SessionGMTOffset - now uses broker time directly  
 ✅ **Improved**: Entry logic requires strong multi-bar HTF trend  
 ✅ **Enhanced**: Stop losses account for spread costs  
-✅ **Added**: Session debugging for troubleshooting  
+✅ **Added**: Better session debugging with detailed time information  
 ✅ **Mandatory**: High volatility requirement for all entries  
 
 The result should be **fewer trades but higher win rate**, leading to improved profitability.
