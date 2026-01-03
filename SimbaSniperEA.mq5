@@ -961,7 +961,7 @@ int AnalyzeBOSStrategy()
         return 0;
     
     // Get recent swing points on M5
-    double swingHigh = -1;
+    double swingHigh = 0.0;
     double swingLow = PRICE_UNSET;
     
     for(int i = 2; i < SwingLookback; i++)
@@ -989,7 +989,7 @@ int AnalyzeBOSStrategy()
     // Check volume expansion if required
     if(BOS_RequireVolumeExpansion)
     {
-        if(!CheckVolumeExpansion())
+        if(!CheckVolumeExpansion(BOS_VolumeMultiplier))
             return 0;
     }
     
@@ -1169,7 +1169,7 @@ int AnalyzeBreakoutStrategy()
     // Check volume expansion if required
     if(Breakout_RequireVolumeExpansion)
     {
-        if(!CheckVolumeExpansion())
+        if(!CheckVolumeExpansion(Breakout_VolumeMultiplier))
             return 0;
     }
     
@@ -1891,7 +1891,7 @@ bool DetectRejectionFromLevel()
 //+------------------------------------------------------------------+
 //| Check for volume expansion (using tick volume)                   |
 //+------------------------------------------------------------------+
-bool CheckVolumeExpansion()
+bool CheckVolumeExpansion(double multiplier = 1.5)
 {
     if(Bars(_Symbol, M5_Timeframe) < 5)
         return false;
@@ -1906,8 +1906,8 @@ bool CheckVolumeExpansion()
     // Calculate average volume
     long avgVolume = (prevVolume1 + prevVolume2 + prevVolume3 + prevVolume4) / 4;
     
-    // Volume expansion: current volume is at least 150% of average
-    if(currentVolume > avgVolume * 1.5)
+    // Volume expansion: current volume is at least multiplier% of average
+    if(currentVolume > avgVolume * multiplier)
         return true;
     
     return false;
