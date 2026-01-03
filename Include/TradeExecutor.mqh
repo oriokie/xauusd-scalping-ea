@@ -159,17 +159,15 @@ public:
         
         // Calculate current R:R
         double risk = MathAbs(m_state.entryPrice - m_state.currentSL);
-        double reward = MathAbs(currentPrice - m_state.entryPrice);
-        double currentRR = (risk > 0) ? (reward / risk) : 0.0;
-        if(!isBuy && reward > 0) currentRR = -currentRR; // Invert for sell
-        if(isBuy && currentPrice < m_state.entryPrice) currentRR = -currentRR;
-        if(!isBuy && currentPrice > m_state.entryPrice) currentRR = -currentRR;
+        double currentRR = 0.0;
         
-        // Ensure correct sign for RR
-        if(isBuy)
-            currentRR = (currentPrice - m_state.entryPrice) / risk;
-        else
-            currentRR = (m_state.entryPrice - currentPrice) / risk;
+        if(risk > 0)
+        {
+            if(isBuy)
+                currentRR = (currentPrice - m_state.entryPrice) / risk;
+            else
+                currentRR = (m_state.entryPrice - currentPrice) / risk;
+        }
         
         // Phase-based management
         switch(m_state.phase)
@@ -257,13 +255,14 @@ public:
                 if(m_trade.PositionClosePartial(m_state.ticket, closeVolume))
                 {
                     Print(StringFormat("Partial 2 closed: %.2f%% at R:R %.2f", m_partial2Percent, currentRR));
-                    m_state.phase = PHASE_PARTIAL_2;
+                    m_state.phase = PHASE_TRAILING;
+                    return; // Exit after closing partial
                 }
             }
         }
         
-        // Also apply trailing in this phase
-        m_state.phase = PHASE_TRAILING;
+        // If not at second partial yet, stay in PARTIAL_1 phase
+        // Trailing will be applied anyway in the main ManagePosition
     }
     
     //+------------------------------------------------------------------+

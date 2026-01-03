@@ -221,8 +221,8 @@ public:
         trade.setupType = setupType;
         trade.session = session;
         
-        // Calculate additional metrics
-        trade.barsHeld = (int)((exitTime - entryTime) / PeriodSeconds(PERIOD_M5));
+        // Calculate additional metrics (using minutes to be timeframe-agnostic)
+        trade.barsHeld = (int)((exitTime - entryTime) / 60); // Minutes held
         
         double riskDistance = MathAbs(entryPrice - stopLoss);
         double rewardDistance = MathAbs(exitPrice - entryPrice);

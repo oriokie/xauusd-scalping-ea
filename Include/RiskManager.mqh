@@ -292,10 +292,16 @@ public:
     //+------------------------------------------------------------------+
     string GetDiagnosticInfo()
     {
+        string volRegime = "MEDIUM";
+        if(m_currentVolatilityRegime == VOLATILITY_HIGH)
+            volRegime = "HIGH";
+        else if(m_currentVolatilityRegime == VOLATILITY_LOW)
+            volRegime = "LOW";
+        
         return StringFormat("Streak: W%d L%d | DD: %.1f%% | Vol: %s | AdjRisk: %.2f%%",
                            m_consecutiveWins, m_consecutiveLosses,
                            m_currentDrawdown,
-                           EnumToString(m_currentVolatilityRegime),
+                           volRegime,
                            GetAdjustedRiskPercent());
     }
     
