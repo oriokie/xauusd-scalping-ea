@@ -46,25 +46,38 @@ input group "=== Structure Detection ==="
 input int SwingLookback = 20;                      // Bars to lookback for swing points
 input double MinDisplacementPercent = 0.3;         // Minimum displacement (% of ATR)
 input int OrderBlockBars = 5;                      // Bars to analyze for Order Blocks
-input int FVG_MinGapPoints = 20;                   // Minimum FVG gap in points
+input int FVG_MinGapPoints = 10;                   // Minimum FVG gap in points (REDUCED from 20 to 10)
 input bool UseSwingPointSL = true;                 // Use swing points for stop-loss
 input bool UseBreakEvenStop = true;                // Enable break-even stop-loss
 input double BreakEvenTriggerRatio = 0.5;          // Break-even trigger (ratio of TP distance)
 input bool UseTrailingStop = true;                 // Enable trailing stop-loss
 input double TrailingStopATRMultiplier = 1.0;      // Trailing stop ATR multiplier
 
-//--- Entry Validation (9-Point System)
-input group "=== 9-Point Entry Validation ==="
-input bool Require_H4_Trend = true;                // 1. H4 Trend Alignment
-input bool Require_H1_Zone = true;                 // 2. H1 Zone Present
-input bool Require_BOS = true;                     // 3. Break of Structure
-input bool Require_LiquiditySweep = true;         // 4. Liquidity Sweep (Optional)
-input bool Require_FVG = true;                    // 5. Fair Value Gap (Optional)
-input bool Require_OrderBlock = true;              // 6. Order Block Confirmation
-input bool Require_ATR_Zone = true;                // 7. ATR Zone Validation
-input bool Require_ValidRR = true;                 // 8. Valid Risk/Reward
-input bool Require_SessionFilter = true;           // 9. Trading Session Active
-input int MinValidationPoints = 7;                 // Minimum validation points required (out of 9)
+//--- Diagnostics and Logging
+input group "=== Diagnostics ==="
+input bool EnableDetailedLogging = true;           // Enable detailed validation logging
+input bool TrackNearMisses = true;                 // Track near-miss setups (trades close to minimum points)
+input bool ShowValidationDetails = true;           // Show validation details on dashboard
+
+//--- Entry Validation (11-Point System) - UPDATED for better trade execution
+input group "=== 11-Point Entry Validation ==="
+input int MinValidationPoints = 4;                 // Minimum validation points required (REDUCED from 7 to 4)
+input bool UseEssentialOnly = false;               // Use only essential validations (H4 Trend + Session + Valid RR)
+input bool Require_H4_Trend = true;                // 1. H4 Trend Alignment (ESSENTIAL)
+input bool Require_H1_Zone = false;                // 2. H1 Zone Present (OPTIONAL - was required)
+input bool Require_BOS = false;                    // 3. Break of Structure (OPTIONAL - was required)
+input bool Require_LiquiditySweep = false;         // 4. Liquidity Sweep (OPTIONAL)
+input bool Require_FVG = false;                    // 5. Fair Value Gap (OPTIONAL)
+input bool Require_OrderBlock = false;             // 6. Order Block Confirmation (OPTIONAL - was required)
+input bool Require_ATR_Zone = false;               // 7. ATR Zone Validation (OPTIONAL - was required)
+input bool Require_ValidRR = true;                 // 8. Valid Risk/Reward (ESSENTIAL)
+input bool Require_SessionFilter = true;           // 9. Trading Session Active (ESSENTIAL)
+
+//--- Entry Strategy Selection
+input group "=== Entry Strategy Type ==="
+enum ENTRY_STRATEGY { STRATEGY_UNIVERSAL, STRATEGY_BREAKOUT, STRATEGY_REVERSAL, STRATEGY_CONTINUATION };
+input ENTRY_STRATEGY EntryStrategy = STRATEGY_UNIVERSAL;  // Entry Strategy Type
+input bool SessionSpecificRulesOptional = true;    // Make session-specific rules optional (recommended: true)
 
 //--- Trading Sessions
 input group "=== Trading Sessions ==="
@@ -79,9 +92,15 @@ input int NewYorkStartHour = 13;                   // New York Start Hour (GMT)
 input int NewYorkEndHour = 22;                     // New York End Hour (GMT)
 input int SessionGMTOffset = 0;                    // Broker GMT Offset
 input bool UseAsianHighLow = true;                 // Use Asian High/Low levels
-input bool AsianRangeBound = true;                 // Asian session: range-bound strategy
-input bool LondonNYBreakout = true;                // London/NY sessions: breakout strategy
+input bool AsianRangeBound = false;                // Asian session: range-bound strategy (RELAXED: set to false)
+input bool LondonNYBreakout = false;               // London/NY sessions: breakout strategy (RELAXED: set to false)
 input double AsianLevelDistanceMultiplier = 0.5;   // Asian level proximity multiplier (ATR)
+
+//--- H4 Trend Detection Mode
+input group "=== H4 Trend Detection ==="
+enum TREND_MODE { TREND_STRICT, TREND_SIMPLE };
+input TREND_MODE H4TrendMode = TREND_SIMPLE;       // H4 Trend Detection Mode (SIMPLE recommended)
+input bool AllowWeakTrend = true;                  // Allow trades in weak trend conditions
 
 //--- Dashboard Settings
 input group "=== Dashboard Settings ==="
@@ -187,6 +206,14 @@ EntryValidation currentValidation;
 
 datetime lastBarTime;
 string lastErrorMsg = "";
+
+// Diagnostics tracking
+int nearMissCount = 0;        // Setups that got close to minimum points
+int validationFailCount[11];  // Track which validation points fail most often
+string validationPointNames[11] = {
+    "H4 Trend", "H1 Zone", "BOS", "Liquidity Sweep", "FVG", 
+    "Order Block", "ATR Zone", "Breakout", "Asian Level", "Valid R:R", "Session Active"
+};
 
 // Constants
 #define PRICE_UNSET 999999.0
@@ -383,6 +410,7 @@ bool UpdateATRBuffers()
 
 //+------------------------------------------------------------------+
 //| Analyze H4 trend bias (swing structure and displacement)         |
+//| UPDATED: Now supports STRICT and SIMPLE modes                     |
 //+------------------------------------------------------------------+
 void AnalyzeH4Trend()
 {
@@ -393,6 +421,40 @@ void AnalyzeH4Trend()
         return;
     }
     
+    double currentClose = iClose(_Symbol, H4_Timeframe, 0);
+    
+    // SIMPLE MODE: Just use EMA alignment (much less restrictive)
+    if(H4TrendMode == TREND_SIMPLE)
+    {
+        // Bullish: price > EMA20 > EMA50
+        if(currentClose > ema20H4[0] && ema20H4[0] > ema50H4[0])
+        {
+            h4Trend = TREND_BULLISH;
+            return;
+        }
+        // Bearish: price < EMA20 < EMA50
+        else if(currentClose < ema20H4[0] && ema20H4[0] < ema50H4[0])
+        {
+            h4Trend = TREND_BEARISH;
+            return;
+        }
+        // Neutral: EMAs not aligned
+        else
+        {
+            h4Trend = TREND_NEUTRAL;
+            if(AllowWeakTrend)
+            {
+                // In weak trend mode, allow simple price vs EMA20
+                if(currentClose > ema20H4[0])
+                    h4Trend = TREND_BULLISH;
+                else if(currentClose < ema20H4[0])
+                    h4Trend = TREND_BEARISH;
+            }
+            return;
+        }
+    }
+    
+    // STRICT MODE: Original logic with swing structure + EMA alignment
     // Detect swing highs and lows on H4
     ArrayResize(h4Swings, 0);
     
@@ -467,16 +529,22 @@ void AnalyzeH4Trend()
             h4Trend = TREND_NEUTRAL;
     }
     
-    // Confirm trend with EMA alignment
-    double currentClose = iClose(_Symbol, H4_Timeframe, 0);
-    
+    // Confirm trend with EMA alignment (strict mode only)
     // For bullish trend: price > EMA20 > EMA50
     if(h4Trend == TREND_BULLISH)
     {
         if(!(currentClose > ema20H4[0] && ema20H4[0] > ema50H4[0]))
         {
-            h4Trend = TREND_NEUTRAL;
-            lastErrorMsg = "H4 bullish swing structure but EMA not aligned";
+            if(AllowWeakTrend)
+            {
+                // Keep trend but note it's weak
+                lastErrorMsg = "H4 bullish swing structure but EMA not perfectly aligned (weak trend allowed)";
+            }
+            else
+            {
+                h4Trend = TREND_NEUTRAL;
+                lastErrorMsg = "H4 bullish swing structure but EMA not aligned";
+            }
         }
     }
     // For bearish trend: price < EMA20 < EMA50
@@ -484,8 +552,16 @@ void AnalyzeH4Trend()
     {
         if(!(currentClose < ema20H4[0] && ema20H4[0] < ema50H4[0]))
         {
-            h4Trend = TREND_NEUTRAL;
-            lastErrorMsg = "H4 bearish swing structure but EMA not aligned";
+            if(AllowWeakTrend)
+            {
+                // Keep trend but note it's weak
+                lastErrorMsg = "H4 bearish swing structure but EMA not perfectly aligned (weak trend allowed)";
+            }
+            else
+            {
+                h4Trend = TREND_NEUTRAL;
+                lastErrorMsg = "H4 bearish swing structure but EMA not aligned";
+            }
         }
     }
     
@@ -496,9 +572,9 @@ void AnalyzeH4Trend()
     if(displacement < minDisplacement)
     {
         // Not enough displacement, trend may be weak
-        if(h4Trend != TREND_NEUTRAL)
+        if(h4Trend != TREND_NEUTRAL && !AllowWeakTrend)
         {
-            // Still keep trend but note weak displacement
+            // In strict mode without weak trend allowance, this could invalidate trend
             lastErrorMsg = "H4 trend detected but weak displacement";
         }
     }
@@ -871,67 +947,186 @@ int AnalyzeEntryOpportunity()
     if(currentValidation.sessionActive)
         currentValidation.totalPoints++;
     
-    // Apply session-specific strategies
-    if(AsianRangeBound && currentSession == SESSION_ASIAN)
+    // Track validation failures for diagnostics
+    if(EnableDetailedLogging)
     {
-        // In Asian session, favor range-bound setups, avoid breakouts
-        if(currentValidation.breakoutDetected)
-            return 0; // Skip breakout trades during Asian session
-        
-        // Only trade reversals from Asian high/low
-        if(!currentValidation.asianLevelValid)
+        if(!currentValidation.h4TrendValid) validationFailCount[0]++;
+        if(!currentValidation.h1ZoneValid) validationFailCount[1]++;
+        if(!currentValidation.bosDetected) validationFailCount[2]++;
+        if(!currentValidation.liquiditySweep) validationFailCount[3]++;
+        if(!currentValidation.fvgPresent) validationFailCount[4]++;
+        if(!currentValidation.orderBlockValid) validationFailCount[5]++;
+        if(!currentValidation.atrZoneValid) validationFailCount[6]++;
+        if(!currentValidation.breakoutDetected) validationFailCount[7]++;
+        if(!currentValidation.asianLevelValid) validationFailCount[8]++;
+        if(!currentValidation.validRiskReward) validationFailCount[9]++;
+        if(!currentValidation.sessionActive) validationFailCount[10]++;
+    }
+    
+    // Apply strategy-specific validation (only if not UNIVERSAL)
+    if(EntryStrategy == STRATEGY_BREAKOUT)
+    {
+        // Breakout strategy: MUST have breakout, skip zone proximity requirement
+        if(!currentValidation.breakoutDetected)
         {
-            lastErrorMsg = "Asian session requires valid Asian level proximity";
+            lastErrorMsg = "Breakout strategy requires breakout detection";
             return 0;
         }
-        
-        // Must show rejection (wick) from level
+        // Optional: Check volume expansion for confirmation
+        if(LondonNYBreakout && !SessionSpecificRulesOptional)
+        {
+            if(!CheckVolumeExpansion())
+            {
+                lastErrorMsg = "Breakout strategy prefers volume expansion";
+                // Don't return 0, just note it
+            }
+        }
+    }
+    else if(EntryStrategy == STRATEGY_REVERSAL)
+    {
+        // Reversal strategy: MUST have zone/OB + rejection, skip breakout
+        if(!currentValidation.h1ZoneValid && !currentValidation.orderBlockValid)
+        {
+            lastErrorMsg = "Reversal strategy requires zone or order block";
+            return 0;
+        }
+        // Check for rejection pattern
         if(!DetectRejectionFromLevel())
         {
-            lastErrorMsg = "Asian session requires rejection from level";
+            lastErrorMsg = "Reversal strategy prefers rejection from level";
+            // Don't return 0 if session rules are optional
+            if(!SessionSpecificRulesOptional)
+                return 0;
+        }
+    }
+    else if(EntryStrategy == STRATEGY_CONTINUATION)
+    {
+        // Continuation strategy: MUST have trend + pullback (BOS or zone)
+        if(!currentValidation.h4TrendValid)
+        {
+            lastErrorMsg = "Continuation strategy requires clear H4 trend";
+            return 0;
+        }
+        if(!currentValidation.bosDetected && !currentValidation.h1ZoneValid)
+        {
+            lastErrorMsg = "Continuation strategy requires pullback (BOS or zone)";
             return 0;
         }
     }
+    // UNIVERSAL strategy: No specific requirements, use point-based system only
     
-    if(LondonNYBreakout && (currentSession == SESSION_LONDON || currentSession == SESSION_NEWYORK))
+    // Apply session-specific strategies (only if NOT optional)
+    if(!SessionSpecificRulesOptional)
     {
-        // In London/NY sessions, favor breakout patterns
-        // Require strong breakout confirmation
-        if(!currentValidation.breakoutDetected)
+        if(AsianRangeBound && currentSession == SESSION_ASIAN)
         {
-            lastErrorMsg = "London/NY session requires breakout confirmation";
-            return 0;
+            // In Asian session, favor range-bound setups, avoid breakouts
+            if(currentValidation.breakoutDetected)
+            {
+                lastErrorMsg = "Asian session avoiding breakout (session rules active)";
+                return 0; // Skip breakout trades during Asian session
+            }
+            
+            // Only trade reversals from Asian high/low
+            if(!currentValidation.asianLevelValid)
+            {
+                lastErrorMsg = "Asian session requires valid Asian level proximity (session rules active)";
+                return 0;
+            }
+            
+            // Must show rejection (wick) from level
+            if(!DetectRejectionFromLevel())
+            {
+                lastErrorMsg = "Asian session requires rejection from level (session rules active)";
+                return 0;
+            }
         }
         
-        // Must have volume expansion (use tick volume)
-        if(!CheckVolumeExpansion())
+        if(LondonNYBreakout && (currentSession == SESSION_LONDON || currentSession == SESSION_NEWYORK))
         {
-            lastErrorMsg = "London/NY session requires volume expansion";
-            return 0;
+            // In London/NY sessions, favor breakout patterns
+            // Require strong breakout confirmation
+            if(!currentValidation.breakoutDetected)
+            {
+                lastErrorMsg = "London/NY session requires breakout confirmation (session rules active)";
+                return 0;
+            }
+            
+            // Must have volume expansion (use tick volume)
+            if(!CheckVolumeExpansion())
+            {
+                lastErrorMsg = "London/NY session requires volume expansion (session rules active)";
+                return 0;
+            }
+        }
+    }
+    
+    // Track near-misses (setups close to minimum)
+    if(TrackNearMisses && currentValidation.totalPoints >= (MinValidationPoints - 2) && 
+       currentValidation.totalPoints < MinValidationPoints)
+    {
+        nearMissCount++;
+        if(EnableDetailedLogging)
+        {
+            Print(StringFormat("NEAR MISS: %d/%d points. H4Trend:%s Zone:%s BOS:%s RR:%s Session:%s",
+                  currentValidation.totalPoints, MinValidationPoints,
+                  currentValidation.h4TrendValid ? "✓" : "✗",
+                  currentValidation.h1ZoneValid ? "✓" : "✗",
+                  currentValidation.bosDetected ? "✓" : "✗",
+                  currentValidation.validRiskReward ? "✓" : "✗",
+                  currentValidation.sessionActive ? "✓" : "✗"));
         }
     }
     
     // Check if minimum validation points met
     if(currentValidation.totalPoints < MinValidationPoints)
+    {
+        if(EnableDetailedLogging)
+            lastErrorMsg = StringFormat("Validation points %d < minimum %d", currentValidation.totalPoints, MinValidationPoints);
         return 0; // No signal
+    }
     
-    // Check required validations
-    if(Require_H4_Trend && !currentValidation.h4TrendValid)
-        return 0;
-    if(Require_H1_Zone && !currentValidation.h1ZoneValid)
-        return 0;
-    if(Require_BOS && !currentValidation.bosDetected)
-        return 0;
-    if(Require_LiquiditySweep && !currentValidation.liquiditySweep)
-        return 0;
-    if(Require_FVG && !currentValidation.fvgPresent)
-        return 0;
-    if(Require_OrderBlock && !currentValidation.orderBlockValid)
-        return 0;
-    if(Require_ATR_Zone && !currentValidation.atrZoneValid)
-        return 0;
-    if(Require_SessionFilter && !currentValidation.sessionActive)
-        return 0;
+    // Essential-only mode: Skip individual requirement checks
+    if(UseEssentialOnly)
+    {
+        // Only check essential requirements
+        if(!currentValidation.h4TrendValid)
+        {
+            lastErrorMsg = "Essential mode: H4 trend required";
+            return 0;
+        }
+        if(!currentValidation.sessionActive)
+        {
+            lastErrorMsg = "Essential mode: Active session required";
+            return 0;
+        }
+        if(!currentValidation.validRiskReward)
+        {
+            lastErrorMsg = "Essential mode: Valid R:R required";
+            return 0;
+        }
+        // If essentials are met, proceed
+    }
+    else
+    {
+        // Check required validations (only if their inputs are true)
+        if(Require_H4_Trend && !currentValidation.h4TrendValid)
+            return 0;
+        if(Require_H1_Zone && !currentValidation.h1ZoneValid)
+            return 0;
+        if(Require_BOS && !currentValidation.bosDetected)
+            return 0;
+        if(Require_LiquiditySweep && !currentValidation.liquiditySweep)
+            return 0;
+        if(Require_FVG && !currentValidation.fvgPresent)
+            return 0;
+        if(Require_OrderBlock && !currentValidation.orderBlockValid)
+            return 0;
+        if(Require_ATR_Zone && !currentValidation.atrZoneValid)
+            return 0;
+        if(Require_SessionFilter && !currentValidation.sessionActive)
+            return 0;
+    }
     
     // Determine direction based on H4 trend
     if(h4Trend == TREND_BULLISH)
@@ -1744,12 +1939,12 @@ void CreateDashboard()
 {
     string prefix = "SimbaSniper_";
     
-    // Background
+    // Background - increased height to accommodate new fields
     ObjectCreate(0, prefix + "BG", OBJ_RECTANGLE_LABEL, 0, 0, 0);
     ObjectSetInteger(0, prefix + "BG", OBJPROP_XDISTANCE, DashboardX);
     ObjectSetInteger(0, prefix + "BG", OBJPROP_YDISTANCE, DashboardY);
-    ObjectSetInteger(0, prefix + "BG", OBJPROP_XSIZE, 350);
-    ObjectSetInteger(0, prefix + "BG", OBJPROP_YSIZE, 520);
+    ObjectSetInteger(0, prefix + "BG", OBJPROP_XSIZE, 380);
+    ObjectSetInteger(0, prefix + "BG", OBJPROP_YSIZE, 545);
     ObjectSetInteger(0, prefix + "BG", OBJPROP_BGCOLOR, DashboardBGColor);
     ObjectSetInteger(0, prefix + "BG", OBJPROP_BORDER_TYPE, BORDER_FLAT);
     ObjectSetInteger(0, prefix + "BG", OBJPROP_CORNER, CORNER_LEFT_UPPER);
@@ -1764,16 +1959,17 @@ void CreateDashboard()
     CreateLabel(prefix + "AsianLevels", "Asian High/Low: N/A", DashboardX + 10, DashboardY + 160, 9, DashboardTextColor);
     CreateLabel(prefix + "Validation", "Entry Validation: 0/11", DashboardX + 10, DashboardY + 185, 9, DashboardTextColor);
     CreateLabel(prefix + "Points", "Points Met: None", DashboardX + 10, DashboardY + 210, 8, clrYellow);
-    CreateLabel(prefix + "Session", "Session: Closed", DashboardX + 10, DashboardY + 235, 9, DashboardTextColor);
-    CreateLabel(prefix + "Balance", "Balance: 0.00", DashboardX + 10, DashboardY + 265, 9, DashboardTextColor);
-    CreateLabel(prefix + "DailyPL", "Daily P/L: 0.00", DashboardX + 10, DashboardY + 290, 9, DashboardTextColor);
-    CreateLabel(prefix + "Trades", "Trades: 0", DashboardX + 10, DashboardY + 315, 9, DashboardTextColor);
-    CreateLabel(prefix + "Positions", "Open Positions: 0", DashboardX + 10, DashboardY + 340, 9, DashboardTextColor);
-    CreateLabel(prefix + "ATRH4", "ATR H4: 0.00", DashboardX + 10, DashboardY + 370, 8, DashboardTextColor);
-    CreateLabel(prefix + "ATRH1", "ATR H1: 0.00", DashboardX + 10, DashboardY + 395, 8, DashboardTextColor);
-    CreateLabel(prefix + "ATRM5", "ATR M5: 0.00", DashboardX + 10, DashboardY + 420, 8, DashboardTextColor);
-    CreateLabel(prefix + "Status", "Status: Active", DashboardX + 10, DashboardY + 445, 9, clrLime);
-    CreateLabel(prefix + "Error", "", DashboardX + 10, DashboardY + 470, 7, clrRed);
+    CreateLabel(prefix + "NearMiss", "Near-Misses: 0", DashboardX + 10, DashboardY + 235, 8, clrOrange);
+    CreateLabel(prefix + "Session", "Session: Closed", DashboardX + 10, DashboardY + 260, 9, DashboardTextColor);
+    CreateLabel(prefix + "Balance", "Balance: 0.00", DashboardX + 10, DashboardY + 290, 9, DashboardTextColor);
+    CreateLabel(prefix + "DailyPL", "Daily P/L: 0.00", DashboardX + 10, DashboardY + 315, 9, DashboardTextColor);
+    CreateLabel(prefix + "Trades", "Trades: 0", DashboardX + 10, DashboardY + 340, 9, DashboardTextColor);
+    CreateLabel(prefix + "Positions", "Open Positions: 0", DashboardX + 10, DashboardY + 365, 9, DashboardTextColor);
+    CreateLabel(prefix + "ATRH4", "ATR H4: 0.00", DashboardX + 10, DashboardY + 395, 8, DashboardTextColor);
+    CreateLabel(prefix + "ATRH1", "ATR H1: 0.00", DashboardX + 10, DashboardY + 420, 8, DashboardTextColor);
+    CreateLabel(prefix + "ATRM5", "ATR M5: 0.00", DashboardX + 10, DashboardY + 445, 8, DashboardTextColor);
+    CreateLabel(prefix + "Status", "Status: Active", DashboardX + 10, DashboardY + 470, 9, clrLime);
+    CreateLabel(prefix + "Error", "", DashboardX + 10, DashboardY + 495, 7, clrRed);
 }
 
 //+------------------------------------------------------------------+
@@ -1817,6 +2013,12 @@ void UpdateDashboard()
         trendColor = clrYellow;
     }
     
+    // Add trend mode indicator
+    if(H4TrendMode == TREND_SIMPLE)
+        trendText += " (Simple)";
+    else
+        trendText += " (Strict)";
+    
     ObjectSetString(0, prefix + "H4Trend", OBJPROP_TEXT, trendText);
     ObjectSetInteger(0, prefix + "H4Trend", OBJPROP_COLOR, trendColor);
     
@@ -1840,9 +2042,21 @@ void UpdateDashboard()
         asianText += "N/A";
     ObjectSetString(0, prefix + "AsianLevels", OBJPROP_TEXT, asianText);
     
-    // Validation
-    ObjectSetString(0, prefix + "Validation", OBJPROP_TEXT, 
-                    StringFormat("Entry Validation: %d/11", currentValidation.totalPoints));
+    // Validation with strategy mode
+    string validationText = StringFormat("Validation: %d/11 (Min:%d)", 
+                                         currentValidation.totalPoints, MinValidationPoints);
+    if(UseEssentialOnly)
+        validationText += " [Essential Only]";
+    else if(EntryStrategy == STRATEGY_BREAKOUT)
+        validationText += " [Breakout]";
+    else if(EntryStrategy == STRATEGY_REVERSAL)
+        validationText += " [Reversal]";
+    else if(EntryStrategy == STRATEGY_CONTINUATION)
+        validationText += " [Continuation]";
+    else
+        validationText += " [Universal]";
+    
+    ObjectSetString(0, prefix + "Validation", OBJPROP_TEXT, validationText);
     
     // Validation Points Details
     string pointsText = "Points: ";
@@ -1855,11 +2069,19 @@ void UpdateDashboard()
     if(currentValidation.atrZoneValid) pointsText += "ATR ";
     if(currentValidation.breakoutDetected) pointsText += "Breakout ";
     if(currentValidation.asianLevelValid) pointsText += "Asian ";
+    if(currentValidation.validRiskReward) pointsText += "RR ";
     if(currentValidation.sessionActive) pointsText += "Session";
     
     if(currentValidation.totalPoints == 0) pointsText = "Points: None";
     
     ObjectSetString(0, prefix + "Points", OBJPROP_TEXT, pointsText);
+    
+    // Near-miss tracking
+    if(TrackNearMisses && ShowValidationDetails)
+    {
+        string nearMissText = StringFormat("Near-Misses: %d", nearMissCount);
+        ObjectSetString(0, prefix + "NearMiss", OBJPROP_TEXT, nearMissText);
+    }
     
     // Session
     string sessionText = "Session: ";
@@ -1867,6 +2089,9 @@ void UpdateDashboard()
     else if(currentSession == SESSION_LONDON) sessionText += "LONDON";
     else if(currentSession == SESSION_NEWYORK) sessionText += "NEW YORK";
     else sessionText += "CLOSED";
+    
+    if(SessionSpecificRulesOptional)
+        sessionText += " (Rules: Optional)";
     
     color sessionColor = (currentSession != SESSION_NONE) ? clrLime : clrOrange;
     ObjectSetString(0, prefix + "Session", OBJPROP_TEXT, sessionText);
