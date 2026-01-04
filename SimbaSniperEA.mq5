@@ -898,6 +898,7 @@ void DetectH1FairValueGaps()
 //+------------------------------------------------------------------+
 void LogStrategyDecision(string strategyName, string reason, bool isPass, string details = "")
 {
+    // Only log if at least one logging flag is enabled
     if(!EnableDetailedLogging && !LogStrategyCriteria)
         return;
     
@@ -1568,16 +1569,6 @@ int AnalyzeEntryOpportunity()
     ZeroMemory(currentValidation);
     currentValidation.totalPoints = 0;
     
-    // Early filter: Session check (applies to both independent and legacy systems)
-    bool inTradingSession = IsWithinTradingSession();
-    if(!inTradingSession)
-    {
-        if(EnableDetailedLogging)
-            Print("REJECTED: Outside trading session");
-        lastErrorMsg = "Not in active trading session";
-        return 0;
-    }
-    
     // Early filter: Spread check
     if(UseSpreadFilter)
     {
@@ -1649,7 +1640,8 @@ int AnalyzeEntryOpportunity()
             signal = AnalyzeFVGStrategy();
             if(signal != 0)
             {
-                Print(StringFormat("*** FVG STRATEGY TRIGGERED %s SIGNAL ***", signal > 0 ? "BUY" : "SELL"));
+                if(EnableDetailedLogging)
+                    Print(StringFormat("*** FVG STRATEGY TRIGGERED %s SIGNAL ***", signal > 0 ? "BUY" : "SELL"));
                 return signal;
             }
         }
@@ -1661,7 +1653,8 @@ int AnalyzeEntryOpportunity()
             signal = AnalyzeBOSStrategy();
             if(signal != 0)
             {
-                Print(StringFormat("*** BOS STRATEGY TRIGGERED %s SIGNAL ***", signal > 0 ? "BUY" : "SELL"));
+                if(EnableDetailedLogging)
+                    Print(StringFormat("*** BOS STRATEGY TRIGGERED %s SIGNAL ***", signal > 0 ? "BUY" : "SELL"));
                 return signal;
             }
         }
@@ -1673,7 +1666,8 @@ int AnalyzeEntryOpportunity()
             signal = AnalyzeHTFZoneStrategy();
             if(signal != 0)
             {
-                Print(StringFormat("*** HTF ZONE STRATEGY TRIGGERED %s SIGNAL ***", signal > 0 ? "BUY" : "SELL"));
+                if(EnableDetailedLogging)
+                    Print(StringFormat("*** HTF ZONE STRATEGY TRIGGERED %s SIGNAL ***", signal > 0 ? "BUY" : "SELL"));
                 return signal;
             }
         }
@@ -1685,7 +1679,8 @@ int AnalyzeEntryOpportunity()
             signal = AnalyzeOrderBlockStrategy();
             if(signal != 0)
             {
-                Print(StringFormat("*** ORDER BLOCK STRATEGY TRIGGERED %s SIGNAL ***", signal > 0 ? "BUY" : "SELL"));
+                if(EnableDetailedLogging)
+                    Print(StringFormat("*** ORDER BLOCK STRATEGY TRIGGERED %s SIGNAL ***", signal > 0 ? "BUY" : "SELL"));
                 return signal;
             }
         }
@@ -1697,7 +1692,8 @@ int AnalyzeEntryOpportunity()
             signal = AnalyzeBreakoutStrategy();
             if(signal != 0)
             {
-                Print(StringFormat("*** BREAKOUT STRATEGY TRIGGERED %s SIGNAL ***", signal > 0 ? "BUY" : "SELL"));
+                if(EnableDetailedLogging)
+                    Print(StringFormat("*** BREAKOUT STRATEGY TRIGGERED %s SIGNAL ***", signal > 0 ? "BUY" : "SELL"));
                 return signal;
             }
         }
