@@ -936,15 +936,19 @@ int AnalyzeFVGStrategy()
     
     // Check for valid FVG entry
     int fvgCount = ArraySize(h1FVGs);
-    if(LogFVGStrategy)
-        LogStrategyDecision("FVG", "FVG Count", fvgCount > 0, StringFormat("Found %d FVGs", fvgCount));
     
     if(fvgCount == 0)
     {
         if(LogFVGStrategy)
+        {
+            LogStrategyDecision("FVG", "FVG Detection", false, "No FVGs found on H1");
             Print("========== FVG STRATEGY: NO FVGs FOUND ==========");
+        }
         return 0;
     }
+    
+    if(LogFVGStrategy)
+        LogStrategyDecision("FVG", "FVG Detection", true, StringFormat("Found %d FVG(s)", fvgCount));
     
     for(int i = 0; i < fvgCount; i++)
     {
@@ -1186,15 +1190,19 @@ int AnalyzeHTFZoneStrategy()
                           SymbolInfoDouble(_Symbol, SYMBOL_ASK)) / 2.0;
     
     int zoneCount = ArraySize(h1Zones);
-    if(LogHTFZoneStrategy)
-        LogStrategyDecision("HTF Zone", "Zone Count", zoneCount > 0, StringFormat("Found %d zones", zoneCount));
     
     if(zoneCount == 0)
     {
         if(LogHTFZoneStrategy)
+        {
+            LogStrategyDecision("HTF Zone", "Zone Detection", false, "No H1 zones found");
             Print("========== HTF ZONE STRATEGY: NO ZONES FOUND ==========");
+        }
         return 0;
     }
+    
+    if(LogHTFZoneStrategy)
+        LogStrategyDecision("HTF Zone", "Zone Detection", true, StringFormat("Found %d zone(s)", zoneCount));
     
     // Check for valid H1 zone
     for(int i = 0; i < zoneCount; i++)
@@ -1314,15 +1322,19 @@ int AnalyzeOrderBlockStrategy()
                           SymbolInfoDouble(_Symbol, SYMBOL_ASK)) / 2.0;
     
     int obCount = ArraySize(h1OrderBlocks);
-    if(LogOBStrategy)
-        LogStrategyDecision("OB", "Order Block Count", obCount > 0, StringFormat("Found %d order blocks", obCount));
     
     if(obCount == 0)
     {
         if(LogOBStrategy)
+        {
+            LogStrategyDecision("OB", "Order Block Detection", false, "No order blocks found on H1");
             Print("========== ORDER BLOCK STRATEGY: NO ORDER BLOCKS FOUND ==========");
+        }
         return 0;
     }
+    
+    if(LogOBStrategy)
+        LogStrategyDecision("OB", "Order Block Detection", true, StringFormat("Found %d order block(s)", obCount));
     
     // Check for valid order block
     for(int i = 0; i < obCount; i++)
