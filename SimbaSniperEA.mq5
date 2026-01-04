@@ -933,12 +933,6 @@ int AnalyzeFVGStrategy()
     double currentPrice = (SymbolInfoDouble(_Symbol, SYMBOL_BID) + 
                           SymbolInfoDouble(_Symbol, SYMBOL_ASK)) / 2.0;
     
-    if(LogFVGStrategy)
-        LogStrategyDecision("FVG", "H4 Trend Check", true, h4Trend == TREND_BULLISH ? "BULLISH" : "BEARISH");
-    
-    double currentPrice = (SymbolInfoDouble(_Symbol, SYMBOL_BID) + 
-                          SymbolInfoDouble(_Symbol, SYMBOL_ASK)) / 2.0;
-    
     // Check for valid FVG entry
     int fvgCount = ArraySize(h1FVGs);
     if(LogFVGStrategy)
