@@ -96,8 +96,8 @@ input bool SessionSpecificRulesOptional = true;    // Make session-specific rule
 
 //--- Independent Trading Strategies System
 input group "=== Independent Strategies (NEW) ==="
-input bool UseIndependentStrategies = false;       // Enable Independent Strategies System
-input bool EnableAllStrategies = false;            // Quick toggle: Enable all strategies
+input bool UseIndependentStrategies = true;        // Enable Independent Strategies System
+input bool EnableAllStrategies = true;             // Quick toggle: Enable all strategies
 
 //--- FVG Strategy
 input group "=== FVG Strategy ==="
