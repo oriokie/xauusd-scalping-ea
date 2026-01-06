@@ -152,7 +152,7 @@ input bool EnableAllStrategies = true;             // Quick toggle: Enable all s
 
 //--- FVG Strategy
 input group "=== FVG Strategy ==="
-input bool Enable_FVG_Strategy = false;            // Enable FVG Strategy
+input bool Enable_FVG_Strategy = true;             // Enable FVG Strategy
 input double FVG_MinRR = 2.0;                      // FVG: Minimum Risk/Reward Ratio
 input bool FVG_RequireRejection = false;           // FVG: Require rejection candle pattern
 input bool FVG_RequireFresh = false;               // FVG: Require fresh FVG (< 20 bars old)
@@ -160,7 +160,7 @@ input int FVG_MaxAgeBars = 20;                     // FVG: Maximum age in bars
 
 //--- BOS Strategy
 input group "=== BOS Strategy ==="
-input bool Enable_BOS_Strategy = false;            // Enable BOS Strategy
+input bool Enable_BOS_Strategy = true;             // Enable BOS Strategy
 input double BOS_MinRR = 2.0;                      // BOS: Minimum Risk/Reward Ratio
 input bool BOS_RequireVolumeExpansion = false;     // BOS: Require volume expansion (150% avg)
 input double BOS_VolumeMultiplier = 1.5;           // BOS: Volume expansion multiplier
@@ -168,7 +168,7 @@ input bool BOS_RequireProximityToZone = false;     // BOS: Require proximity to 
 
 //--- HTF Zone Strategy
 input group "=== HTF Zone Strategy ==="
-input bool Enable_HTFZone_Strategy = false;        // Enable HTF Zone Strategy
+input bool Enable_HTFZone_Strategy = true;         // Enable HTF Zone Strategy
 input double HTFZone_MinRR = 2.5;                  // HTF Zone: Minimum Risk/Reward Ratio
 input int HTFZone_MinTouches = 3;                  // HTF Zone: Minimum touches required
 input double HTFZone_MinStrength = 1.0;            // HTF Zone: Minimum strength score
@@ -176,14 +176,14 @@ input bool HTFZone_RequireRejection = true;        // HTF Zone: Require rejectio
 
 //--- Order Block Strategy
 input group "=== Order Block Strategy ==="
-input bool Enable_OB_Strategy = false;             // Enable Order Block Strategy
+input bool Enable_OB_Strategy = true;              // Enable Order Block Strategy
 input double OB_MinRR = 2.0;                       // OB: Minimum Risk/Reward Ratio
 input bool OB_RequireFVG = false;                  // OB: Require FVG within OB
 input bool OB_OnlyUntested = false;                // OB: Only untested blocks (no violation)
 
 //--- Breakout Strategy (Asian Range)
 input group "=== Breakout Strategy ==="
-input bool Enable_Breakout_Strategy = false;       // Enable Breakout Strategy
+input bool Enable_Breakout_Strategy = true;        // Enable Breakout Strategy
 input double Breakout_MinRR = 1.5;                 // Breakout: Minimum Risk/Reward Ratio
 input bool Breakout_RequireVolumeExpansion = true; // Breakout: Require volume expansion
 input double Breakout_VolumeMultiplier = 1.5;      // Breakout: Volume expansion multiplier

@@ -709,7 +709,9 @@ void ManageOpenPositions()
             }
             
             // Mean reversion exit - only apply if sufficient profit
-            if(UseMeanReversion && profitPoints > MinProfitPoints * 1.5)
+            // Increased threshold from 1.5x to 2.0x to prevent premature exits
+            // This ensures trades have captured meaningful profit before considering mean reversion
+            if(UseMeanReversion && profitPoints > MinProfitPoints * 2.0)
             {
                 if(CheckMeanReversionExit(posType))
                 {
@@ -789,26 +791,31 @@ bool CheckMeanReversionExit(ENUM_POSITION_TYPE posType)
     double bbLwr = bbLower[0];
     
     // Use larger threshold to avoid premature exits
-    // Exit only when price crosses beyond the middle BB, not just approaches it
-    double threshold = atrBuffer[0] * 0.3;
+    // Exit only when price has crossed significantly beyond middle BB AND is approaching opposite band
+    // This prevents premature exits and ensures meaningful profit capture
+    double threshold = atrBuffer[0] * 0.5; // Increased from 0.3 to 0.5 for less aggressive exits
     
     if(posType == POSITION_TYPE_BUY)
     {
-        // Exit buy only if price is significantly above middle BB or approaching upper BB
-        // This prevents premature mean reversion exits
+        // For BUY positions, exit only when price has crossed well above middle BB 
+        // AND is approaching upper BB - both conditions must be true
         bool crossedMiddle = (currentPrice > bbMid + threshold);
         bool nearUpperBB = (currentPrice > bbUpr - threshold);
         
-        return (crossedMiddle || nearUpperBB);
+        // Changed from OR to AND - both conditions must be true for exit
+        // This ensures we capture more profit before exiting
+        return (crossedMiddle && nearUpperBB);
     }
     else
     {
-        // Exit sell only if price is significantly below middle BB or approaching lower BB
-        // This prevents premature mean reversion exits
+        // For SELL positions, exit only when price has crossed well below middle BB
+        // AND is approaching lower BB - both conditions must be true
         bool crossedMiddle = (currentPrice < bbMid - threshold);
         bool nearLowerBB = (currentPrice < bbLwr + threshold);
         
-        return (crossedMiddle || nearLowerBB);
+        // Changed from OR to AND - both conditions must be true for exit
+        // This ensures we capture more profit before exiting
+        return (crossedMiddle && nearLowerBB);
     }
 }
 
