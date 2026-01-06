@@ -323,6 +323,7 @@ int GetEntrySignal()
     if(Bars(_Symbol, HigherTF) < 3)
     {
         // Not enough HTF data yet, skip trading
+        lastErrorMsg = "Not enough HTF bars available";
         return 0;
     }
     
@@ -335,6 +336,7 @@ int GetEntrySignal()
     if(htfClose0 <= 0.0 || htfClose1 <= 0.0 || htfClose2 <= 0.0)
     {
         // HTF data retrieval failed, skip trading
+        lastErrorMsg = "HTF data retrieval failed";
         return 0;
     }
     
@@ -361,30 +363,74 @@ int GetEntrySignal()
     bool priceNearLowerBB = (currentPrice - bbLower[0]) < (atrBuffer[0] * 0.5);
     bool priceNearUpperBB = (bbUpper[0] - currentPrice) < (atrBuffer[0] * 0.5);
     
-    // Volatility check - prefer trading in higher volatility
-    bool highVolatility = atrBuffer[0] > atrBuffer[1] * 1.1;
+    // Volatility check - prefer trading in higher volatility (RELAXED: optional)
+    bool highVolatility = atrBuffer[0] > atrBuffer[1] * 1.05; // Reduced from 1.1 to 1.05
     
     // Additional stronger trend confirmation on higher timeframe
     // Check multiple HTF bars for stronger trend (htfClose2 already retrieved above)
     bool strongHTFBullish = (htfClose0 > htfClose1) && (htfClose1 > htfClose2);
     bool strongHTFBearish = (htfClose0 < htfClose1) && (htfClose1 < htfClose2);
     
-    // Buy signal conditions - MORE CONSERVATIVE with stronger confirmations
-    // Require: Strong HTF trend + Either liquidity sweep OR (MACD crossover + BB extreme + RSI confirmation)
-    if(strongHTFBullish && 
-       (bullishSweep || (macdBullish && priceBelowLowerBB && (rsiOversold || rsiBullishMomentum))) && 
-       highVolatility) // Require high volatility for all entries
+    // RELAXED: Also accept weaker HTF trend (just 2 bars alignment)
+    bool weakHTFBullish = (htfClose0 > htfClose1) && !strongHTFBearish;
+    bool weakHTFBearish = (htfClose0 < htfClose1) && !strongHTFBullish;
+    
+    // Buy signal conditions - BALANCED (relaxed from conservative)
+    // Option 1: Strong HTF trend + (liquidity sweep OR MACD crossover OR BB extreme with RSI)
+    // Option 2: Weak HTF trend + liquidity sweep + MACD crossover
+    bool buyCondition1 = strongHTFBullish && 
+                        (bullishSweep || macdBullish || (priceBelowLowerBB && rsiBullishMomentum));
+    
+    bool buyCondition2 = weakHTFBullish && 
+                        bullishSweep && 
+                        macdBullish;
+    
+    bool buyCondition3 = htfBullish && 
+                        macdBullish && 
+                        (priceBelowLowerBB || priceNearLowerBB) && 
+                        rsiOversold;
+    
+    if((buyCondition1 || buyCondition2 || buyCondition3) && 
+       (highVolatility || !highVolatility)) // Volatility check now optional (always true)
     {
+        lastErrorMsg = ""; // Clear error on valid signal
+        Print("BUY SIGNAL: Condition1=", buyCondition1, " Condition2=", buyCondition2, " Condition3=", buyCondition3);
         return 1; // Buy
     }
     
-    // Sell signal conditions - MORE CONSERVATIVE with stronger confirmations
-    // Require: Strong HTF trend + Either liquidity sweep OR (MACD crossover + BB extreme + RSI confirmation)
-    if(strongHTFBearish && 
-       (bearishSweep || (macdBearish && priceAboveUpperBB && (rsiOverbought || rsiBearishMomentum))) && 
-       highVolatility) // Require high volatility for all entries
+    // Sell signal conditions - BALANCED (relaxed from conservative)
+    // Option 1: Strong HTF trend + (liquidity sweep OR MACD crossover OR BB extreme with RSI)
+    // Option 2: Weak HTF trend + liquidity sweep + MACD crossover
+    bool sellCondition1 = strongHTFBearish && 
+                         (bearishSweep || macdBearish || (priceAboveUpperBB && rsiBearishMomentum));
+    
+    bool sellCondition2 = weakHTFBearish && 
+                         bearishSweep && 
+                         macdBearish;
+    
+    bool sellCondition3 = htfBearish && 
+                         macdBearish && 
+                         (priceAboveUpperBB || priceNearUpperBB) && 
+                         rsiOverbought;
+    
+    if((sellCondition1 || sellCondition2 || sellCondition3) && 
+       (highVolatility || !highVolatility)) // Volatility check now optional (always true)
     {
+        lastErrorMsg = ""; // Clear error on valid signal
+        Print("SELL SIGNAL: Condition1=", sellCondition1, " Condition2=", sellCondition2, " Condition3=", sellCondition3);
         return -1; // Sell
+    }
+    
+    // Log why no signal (periodically, not every tick)
+    static datetime lastLogTime = 0;
+    if(TimeCurrent() - lastLogTime > 3600) // Log once per hour
+    {
+        lastLogTime = TimeCurrent();
+        lastErrorMsg = StringFormat("No signal: HTF(B:%d,b:%d,S:%d,s:%d) MACD(B:%d,S:%d) BB(BelowL:%d,AboveU:%d) RSI(OS:%d,OB:%d)", 
+                                   strongHTFBullish, weakHTFBullish, strongHTFBearish, weakHTFBearish,
+                                   macdBullish, macdBearish, priceBelowLowerBB, priceAboveUpperBB,
+                                   rsiOversold, rsiOverbought);
+        Print(lastErrorMsg);
     }
     
     return 0; // No signal
