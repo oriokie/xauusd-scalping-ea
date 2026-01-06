@@ -14,6 +14,12 @@
 #include <Trade\PositionInfo.mqh>
 #include <Trade\AccountInfo.mqh>
 
+// Custom modules
+#include "Include/RiskManager.mqh"
+#include "Include/PerformanceTracker.mqh"
+#include "Include/MarketAnalysis.mqh"
+#include "Include/TradeExecutor.mqh"
+
 //+------------------------------------------------------------------+
 //| Input Parameters                                                 |
 //+------------------------------------------------------------------+
@@ -30,12 +36,21 @@ input bool UseM1Precision = false;                 // Use M1 for precision entri
 input group "=== Risk Management ==="
 input double RiskPercentage = 1.0;                 // Risk per trade (%)
 input double MaxDailyLossPercent = 3.0;            // Maximum daily loss (%)
+input double MaxDrawdownPercent = 10.0;            // Maximum drawdown (%)
 input double MinRiskRewardRatio = 2.5;             // Minimum Risk/Reward Ratio
 input int MaxPositions = 1;                        // Maximum concurrent positions
+input int MaxTradesPerHour = 3;                    // Maximum trades per hour (exposure limit)
 input bool UseDynamicRR = false;                   // Use dynamic R:R based on volatility
 input double DynamicRR_Multiplier = 1.0;           // Dynamic R:R volatility multiplier
 input bool UsePartialPositions = false;            // Use partial position scaling
 input double PartialEntry_Percent = 50.0;          // Initial position size (% of full size)
+
+//--- Advanced Risk Management
+input group "=== Advanced Risk Management ==="
+input bool UseStreakAdjustment = true;             // Adjust risk based on win/loss streak
+input bool UseDrawdownAdjustment = true;           // Adjust risk based on drawdown
+input bool UseVolatilityRiskAdjustment = true;     // Adjust risk based on volatility regime
+
 // NOTE: Time-based exit parameters below are prepared for future implementation
 // TODO: Implement time-based exit logic in OnTick() to check position age and close if thresholds exceeded
 input int MaxHoldingTimeBars = 0;                  // [FUTURE] Max holding time in bars (0 = no limit)
@@ -46,7 +61,7 @@ input int TimeBasedExit_Bars = 100;                // [FUTURE] Exit if no moveme
 input group "=== ATR Settings ==="
 input int ATR_Period = 14;                         // ATR Period
 input double ATR_ZoneMultiplier = 1.5;             // ATR multiplier for zone validation
-input double ATR_StopLossMultiplier = 2.0;         // Stop Loss ATR Multiplier
+input double ATR_StopLossMultiplier = 2.5;         // Stop Loss ATR Multiplier (Increased for gold volatility)
 input double ATR_TakeProfitMultiplier = 4.0;       // Take Profit ATR Multiplier
 input double ATR_BreakoutMultiplier = 1.5;         // Breakout detection ATR multiplier
 
@@ -62,6 +77,37 @@ input double BreakEvenTriggerRatio = 0.5;          // Break-even trigger (ratio 
 input bool UseTrailingStop = true;                 // Enable trailing stop-loss
 input double TrailingStopATRMultiplier = 1.0;      // Trailing stop ATR multiplier
 
+//--- Performance Analytics
+input group "=== Performance Analytics ==="
+input bool EnablePerformanceTracking = true;       // Enable detailed performance tracking
+input bool TrackMAE_MFE = true;                    // Track Maximum Adverse/Favorable Excursion
+input bool ShowSessionStats = true;                // Show session-based statistics
+input bool ShowSetupTypeStats = true;              // Show setup type statistics
+
+//--- Entry Quality & Market Analysis
+input group "=== Entry Quality & Analysis ==="
+input bool UseEntryGrading = true;                 // Use entry quality grading (A/B/C/D)
+input bool SkipGradeD = true;                      // Skip Grade D (poor quality) setups
+input bool AdjustSizeByGrade = true;               // Adjust position size by grade (A=120%, B=100%, C=70%)
+input bool UseConfluenceBonus = true;              // Add bonus points for confluence detection
+input bool UseMarketRegimeFilter = true;           // Filter entries by market regime
+input bool AvoidHighVolatilityRegime = true;       // Avoid trading in high volatility regime
+input bool PreferStrongTrend = false;              // Only trade in strong trend regime (strict)
+
+//--- Exit Strategy Enhancement
+input group "=== Exit Strategy ==="
+input bool UsePartialExits = true;                 // Enable partial profit taking
+input double Partial1_Percent = 50.0;              // First partial: % of position to close
+input double Partial1_RR = 1.5;                    // First partial: R:R ratio
+input double Partial2_Percent = 30.0;              // Second partial: % of position to close
+input double Partial2_RR = 2.5;                    // Second partial: R:R ratio
+input bool UseSmartTrailing = true;                // Enable smart trailing stop
+input double SmartTrailingATRMult = 1.0;           // Smart trailing ATR multiplier
+input int TrailingPauseBars = 3;                   // Pause trailing during pullbacks (bars)
+input bool UseTimeDecayExit = true;                // Enable time-decay exit
+input int TimeDecayBars = 100;                     // Exit if no movement after X bars
+input double TimeDecayMinRR = 0.5;                 // Minimum R:R to keep position open
+
 //--- Diagnostics and Logging
 input group "=== Diagnostics ==="
 input bool EnableDetailedLogging = true;           // Enable detailed validation logging
@@ -76,7 +122,12 @@ input bool LogStrategyCriteria = true;             // Log detailed criteria chec
 
 //--- Entry Validation (11-Point System) - UPDATED for better trade execution
 input group "=== 11-Point Entry Validation ==="
-input int MinValidationPoints = 3;                 // Minimum validation points required (essentials: H4 Trend + RR + Session)
+input int MinValidationPoints = 6;                 // Minimum validation points required (can be weighted or traditional points)
+input bool UseWeightedScoring = true;              // Use weighted validation scoring (recommended)
+input double H4TrendWeight = 3.0;                  // H4 Trend weight multiplier (CRITICAL)
+input double RiskRewardWeight = 2.0;               // Risk/Reward weight multiplier (IMPORTANT)
+input double SessionWeight = 1.5;                  // Session filter weight multiplier
+input double ZoneWeight = 1.0;                     // Zone/Structure weight multiplier (default)
 input bool UseEssentialOnly = false;               // Use only essential validations (H4 Trend + Session + Valid RR)
 input bool Require_H4_Trend = true;                // 1. H4 Trend Alignment (ESSENTIAL)
 input bool Require_H1_Zone = false;                // 2. H1 Zone Present (OPTIONAL - was required)
@@ -188,6 +239,12 @@ CTrade trade;
 CPositionInfo positionInfo;
 CAccountInfo accountInfo;
 
+// Advanced modules
+CRiskManager *riskManager;
+CPerformanceTracker *perfTracker;
+CMarketAnalysis *marketAnalysis;
+CTradeExecutor *tradeExecutor;
+
 // ATR Handles for each timeframe
 int atrH4Handle, atrH1Handle, atrM5Handle, atrM1Handle;
 double atrH4[], atrH1[], atrM5[], atrM1[];
@@ -270,6 +327,8 @@ struct EntryValidation {
     bool breakoutDetected;
     bool asianLevelValid;
     int totalPoints;
+    double weightedScore;  // Weighted validation score
+};
 };
 
 EntryValidation currentValidation;
@@ -288,7 +347,7 @@ string validationPointNames[11] = {
 // Constants
 #define PRICE_UNSET 999999.0
 #define DASHBOARD_WIDTH 380
-#define DASHBOARD_HEIGHT 545
+#define DASHBOARD_HEIGHT 620
 
 // Session tracking
 enum SESSION_TYPE { SESSION_ASIAN, SESSION_LONDON, SESSION_NEWYORK, SESSION_NONE };
@@ -299,6 +358,21 @@ SESSION_TYPE currentSession = SESSION_NONE;
 //+------------------------------------------------------------------+
 int OnInit()
 {
+    // Initialize advanced modules
+    riskManager = new CRiskManager();
+    riskManager.Init(RiskPercentage, MaxDailyLossPercent, MaxDrawdownPercent,
+                     UseStreakAdjustment, UseDrawdownAdjustment, UseVolatilityRiskAdjustment);
+    
+    perfTracker = new CPerformanceTracker();
+    
+    marketAnalysis = new CMarketAnalysis();
+    
+    tradeExecutor = new CTradeExecutor();
+    tradeExecutor.Init(UsePartialExits, Partial1_Percent, Partial1_RR,
+                      Partial2_Percent, Partial2_RR,
+                      UseSmartTrailing, SmartTrailingATRMult, TrailingPauseBars,
+                      UseTimeDecayExit, TimeDecayBars, TimeDecayMinRR);
+    
     // Initialize ATR indicators for each timeframe
     atrH4Handle = iATR(_Symbol, H4_Timeframe, ATR_Period);
     atrH1Handle = iATR(_Symbol, H1_Timeframe, ATR_Period);
@@ -359,6 +433,16 @@ int OnInit()
 //+------------------------------------------------------------------+
 void OnDeinit(const int reason)
 {
+    // Clean up advanced modules
+    if(CheckPointer(riskManager) == POINTER_DYNAMIC)
+        delete riskManager;
+    if(CheckPointer(perfTracker) == POINTER_DYNAMIC)
+        delete perfTracker;
+    if(CheckPointer(marketAnalysis) == POINTER_DYNAMIC)
+        delete marketAnalysis;
+    if(CheckPointer(tradeExecutor) == POINTER_DYNAMIC)
+        delete tradeExecutor;
+    
     // Release indicators
     IndicatorRelease(atrH4Handle);
     IndicatorRelease(atrH1Handle);
@@ -400,6 +484,13 @@ void OnTick()
     {
         lastBarTime = currentBarTime;
         
+        // Update risk manager volatility regime
+        if(CheckPointer(riskManager) == POINTER_DYNAMIC && ArraySize(atrH1) >= 3)
+        {
+            double avgATR = (atrH1[0] + atrH1[1] + atrH1[2]) / 3.0;
+            riskManager.UpdateVolatilityRegime(atrH1[0], avgATR);
+        }
+        
         // Update market structure analysis
         AnalyzeH4Trend();
         DetectH1Zones();
@@ -409,7 +500,17 @@ void OnTick()
         // Check for entry opportunities
         if(!tradingPaused && CountOpenPositions() < MaxPositions)
         {
-            if(CheckDailyLossLimit())
+            // Check risk manager exposure limits
+            bool canTrade = true;
+            if(CheckPointer(riskManager) == POINTER_DYNAMIC)
+                canTrade = riskManager.CanOpenPosition(MaxTradesPerHour);
+            
+            if(!canTrade)
+            {
+                if(EnableDetailedLogging)
+                    Print("Trading restricted: Hourly limit or drawdown exceeded");
+            }
+            else if(CheckDailyLossLimit())
             {
                 int signal = AnalyzeEntryOpportunity();
                 
@@ -426,7 +527,32 @@ void OnTick()
         }
     }
     
-    // Manage open positions
+    // Update MAE/MFE for current position
+    if(EnablePerformanceTracking && TrackMAE_MFE && CheckPointer(perfTracker) == POINTER_DYNAMIC)
+    {
+        if(PositionsTotal() > 0 && positionInfo.SelectByIndex(0))
+        {
+            if(positionInfo.Magic() == 0 || positionInfo.Symbol() == _Symbol)
+            {
+                double currentBid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+                double currentAsk = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+                bool isBuy = (positionInfo.Type() == POSITION_TYPE_BUY);
+                perfTracker.UpdateCurrentPosition(currentBid, currentAsk, isBuy);
+            }
+        }
+    }
+    
+    // Manage positions with TradeExecutor
+    if(CheckPointer(tradeExecutor) == POINTER_DYNAMIC && tradeExecutor.IsTracking())
+    {
+        double currentBid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+        double currentAsk = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+        double currentATR = (ArraySize(atrM5) > 0) ? atrM5[0] : 0.0;
+        
+        tradeExecutor.ManagePosition(currentBid, currentAsk, currentATR, M5_Timeframe, _Symbol);
+    }
+    
+    // Manage open positions (legacy management for positions not tracked by TradeExecutor)
     ManageOpenPositions();
     
     // Update dashboard
@@ -1580,6 +1706,14 @@ int AnalyzeEntryOpportunity()
     // Reset validation
     ZeroMemory(currentValidation);
     currentValidation.totalPoints = 0;
+    currentValidation.weightedScore = 0.0;
+    
+    // Early filter: Daily loss limit circuit breaker (extra safety check)
+    if(!CheckDailyLossLimit())
+    {
+        lastErrorMsg = "Daily loss limit reached - trading suspended";
+        return 0;
+    }
     
     // Early filter: Spread check
     if(UseSpreadFilter)
@@ -1724,6 +1858,10 @@ int AnalyzeEntryOpportunity()
     {
         currentValidation.h4TrendValid = true;
         currentValidation.totalPoints++;
+        if(UseWeightedScoring)
+            currentValidation.weightedScore += H4TrendWeight;
+        else
+            currentValidation.weightedScore += 1.0;
     }
     
     // 2. H1 Zone Present
@@ -1736,6 +1874,7 @@ int AnalyzeEntryOpportunity()
         {
             currentValidation.h1ZoneValid = true;
             currentValidation.totalPoints++;
+            currentValidation.weightedScore += (UseWeightedScoring ? ZoneWeight : 1.0);
             break;
         }
     }
@@ -1743,12 +1882,18 @@ int AnalyzeEntryOpportunity()
     // 3. Break of Structure (BOS) on M5
     currentValidation.bosDetected = DetectBreakOfStructure();
     if(currentValidation.bosDetected)
+    {
         currentValidation.totalPoints++;
+        currentValidation.weightedScore += (UseWeightedScoring ? ZoneWeight : 1.0);
+    }
     
     // 4. Liquidity Sweep (Optional)
     currentValidation.liquiditySweep = DetectLiquiditySweep();
     if(currentValidation.liquiditySweep)
+    {
         currentValidation.totalPoints++;
+        currentValidation.weightedScore += (UseWeightedScoring ? ZoneWeight : 1.0);
+    }
     
     // 5. Fair Value Gap Present (Optional)
     for(int i = 0; i < ArraySize(h1FVGs); i++)
@@ -1760,6 +1905,7 @@ int AnalyzeEntryOpportunity()
             {
                 currentValidation.fvgPresent = true;
                 currentValidation.totalPoints++;
+                currentValidation.weightedScore += (UseWeightedScoring ? ZoneWeight : 1.0);
                 break;
             }
         }
@@ -1775,6 +1921,7 @@ int AnalyzeEntryOpportunity()
             {
                 currentValidation.orderBlockValid = true;
                 currentValidation.totalPoints++;
+                currentValidation.weightedScore += (UseWeightedScoring ? ZoneWeight : 1.0);
                 break;
             }
         }
@@ -1783,12 +1930,18 @@ int AnalyzeEntryOpportunity()
     // 7. ATR Zone Validation
     currentValidation.atrZoneValid = ValidateATRZone();
     if(currentValidation.atrZoneValid)
+    {
         currentValidation.totalPoints++;
+        currentValidation.weightedScore += (UseWeightedScoring ? ZoneWeight : 1.0);
+    }
     
     // 8. Breakout Detection
     currentValidation.breakoutDetected = DetectBreakout();
     if(currentValidation.breakoutDetected)
+    {
         currentValidation.totalPoints++;
+        currentValidation.weightedScore += (UseWeightedScoring ? ZoneWeight : 1.0);
+    }
     
     // 9. Asian Level Validation
     if(UseAsianHighLow && asianLevels.isValid)
@@ -1805,6 +1958,7 @@ int AnalyzeEntryOpportunity()
         {
             currentValidation.asianLevelValid = true;
             currentValidation.totalPoints++;
+            currentValidation.weightedScore += (UseWeightedScoring ? ZoneWeight : 1.0);
         }
     }
     
@@ -1815,12 +1969,16 @@ int AnalyzeEntryOpportunity()
     {
         currentValidation.validRiskReward = true;
         currentValidation.totalPoints++;
+        currentValidation.weightedScore += (UseWeightedScoring ? RiskRewardWeight : 1.0);
     }
     
     // 11. Session Filter
     currentValidation.sessionActive = IsWithinTradingSession();
     if(currentValidation.sessionActive)
+    {
         currentValidation.totalPoints++;
+        currentValidation.weightedScore += (UseWeightedScoring ? SessionWeight : 1.0);
+    }
     
     // Track validation failures for diagnostics
     if(EnableDetailedLogging)
@@ -2005,6 +2163,73 @@ int AnalyzeEntryOpportunity()
             return 0;
     }
     
+    // Advanced: Market regime analysis and entry grading
+    if(UseMarketRegimeFilter && CheckPointer(marketAnalysis) == POINTER_DYNAMIC)
+    {
+        // Detect market regime
+        if(ArraySize(atrH1) >= 3)
+        {
+            double avgATR = (atrH1[0] + atrH1[1] + atrH1[2]) / 3.0;
+            int emaTrend = (h4Trend == TREND_BULLISH) ? 1 : (h4Trend == TREND_BEARISH ? -1 : 0);
+            
+            MARKET_REGIME regime = marketAnalysis.DetectMarketRegime(_Symbol, H4_Timeframe, atrH1[0], avgATR, emaTrend);
+            
+            // Filter by regime
+            if(AvoidHighVolatilityRegime && regime == REGIME_HIGH_VOLATILITY)
+            {
+                lastErrorMsg = "Avoiding high volatility regime";
+                return 0;
+            }
+            
+            if(PreferStrongTrend && regime != REGIME_STRONG_TREND)
+            {
+                lastErrorMsg = "Waiting for strong trend regime";
+                return 0;
+            }
+        }
+    }
+    
+    // Advanced: Entry quality grading
+    if(UseEntryGrading && CheckPointer(marketAnalysis) == POINTER_DYNAMIC)
+    {
+        // Detect confluence
+        int confluenceCount = 0;
+        if(UseConfluenceBonus)
+        {
+            confluenceCount = marketAnalysis.DetectConfluence(
+                currentValidation.h4TrendValid,
+                currentValidation.h1ZoneValid,
+                currentValidation.bosDetected,
+                currentValidation.fvgPresent,
+                currentValidation.orderBlockValid,
+                currentValidation.asianLevelValid,
+                currentValidation.validRiskReward
+            );
+        }
+        
+        // Calculate entry grade
+        MARKET_REGIME regime = marketAnalysis.GetCurrentRegime();
+        ENTRY_GRADE grade = marketAnalysis.CalculateEntryGrade(currentValidation.weightedScore, confluenceCount, regime);
+        
+        // Skip poor quality setups
+        if(SkipGradeD && grade == GRADE_D)
+        {
+            lastErrorMsg = StringFormat("Entry quality Grade D - skipping (Score: %.1f, Confluence: %d)",
+                                       currentValidation.weightedScore, confluenceCount);
+            return 0;
+        }
+        
+        // Log entry quality
+        if(EnableDetailedLogging && (grade == GRADE_A || grade == GRADE_B))
+        {
+            Print(StringFormat("Entry Grade %s | Score: %.1f | Confluence: %d | Regime: %s",
+                             marketAnalysis.GetGradeString(grade),
+                             currentValidation.weightedScore,
+                             confluenceCount,
+                             marketAnalysis.GetRegimeString()));
+        }
+    }
+    
     // Determine direction based on H4 trend
     if(h4Trend == TREND_BULLISH)
         return 1; // Buy signal
@@ -2173,6 +2398,20 @@ bool IsVolatilityAcceptable()
     // Avoid if ATR is too high (>150% average) or too low (<50% average)
     if(currentATR > avgATR * 1.5 || currentATR < avgATR * 0.5)
         return false;
+    
+    // Additional check: During high volatility, verify spread is not excessively wide
+    if(UseSpreadFilter && currentATR > avgATR * 1.2)
+    {
+        double spread = SymbolInfoInteger(_Symbol, SYMBOL_SPREAD) * SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+        double spreadPoints = spread / SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+        
+        // During high volatility, use stricter spread limit (75% of max)
+        if(spreadPoints > MaxSpreadPoints * 0.75)
+        {
+            lastErrorMsg = StringFormat("High volatility with wide spread: %.1f points", spreadPoints);
+            return false;
+        }
+    }
         
     return true;
 }
@@ -2424,8 +2663,26 @@ void ExecuteBuyOrder()
     if(trade.Buy(lotSize, _Symbol, ask, sl, tp, comment))
     {
         dailyTrades++;
+        ulong ticket = trade.ResultOrder();
+        
         Print(StringFormat("BUY order executed at %.2f, SL: %.2f, TP: %.2f, Lot: %.2f, Validation: %d/11", 
               ask, sl, tp, lotSize, currentValidation.totalPoints));
+        
+        // Notify risk manager of new trade
+        if(CheckPointer(riskManager) == POINTER_DYNAMIC)
+            riskManager.OnTradeOpen();
+        
+        // Start tracking position in performance tracker
+        if(EnablePerformanceTracking && CheckPointer(perfTracker) == POINTER_DYNAMIC)
+        {
+            perfTracker.StartTrackingPosition(ticket, ask, sl, tp, TimeCurrent());
+        }
+        
+        // Start tracking in trade executor for advanced exit management
+        if(CheckPointer(tradeExecutor) == POINTER_DYNAMIC && (UsePartialExits || UseSmartTrailing))
+        {
+            tradeExecutor.StartTracking(ticket, ask, sl, tp);
+        }
     }
     else
     {
@@ -2505,8 +2762,26 @@ void ExecuteSellOrder()
     if(trade.Sell(lotSize, _Symbol, bid, sl, tp, comment))
     {
         dailyTrades++;
+        ulong ticket = trade.ResultOrder();
+        
         Print(StringFormat("SELL order executed at %.2f, SL: %.2f, TP: %.2f, Lot: %.2f, Validation: %d/11", 
               bid, sl, tp, lotSize, currentValidation.totalPoints));
+        
+        // Notify risk manager of new trade
+        if(CheckPointer(riskManager) == POINTER_DYNAMIC)
+            riskManager.OnTradeOpen();
+        
+        // Start tracking position in performance tracker
+        if(EnablePerformanceTracking && CheckPointer(perfTracker) == POINTER_DYNAMIC)
+        {
+            perfTracker.StartTrackingPosition(ticket, bid, sl, tp, TimeCurrent());
+        }
+        
+        // Start tracking in trade executor for advanced exit management
+        if(CheckPointer(tradeExecutor) == POINTER_DYNAMIC && (UsePartialExits || UseSmartTrailing))
+        {
+            tradeExecutor.StartTracking(ticket, bid, sl, tp);
+        }
     }
     else
     {
@@ -2613,6 +2888,21 @@ double CalculateDynamicRisk()
 //+------------------------------------------------------------------+
 double CalculateLotSize(double stopLossPoints)
 {
+    // Use RiskManager for dynamic position sizing
+    if(CheckPointer(riskManager) == POINTER_DYNAMIC)
+    {
+        double stopLossDistance = stopLossPoints * SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+        double lotSize = riskManager.CalculatePositionSize(stopLossDistance, _Symbol);
+        
+        // Ensure lot size is valid
+        double minLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+        if(lotSize < minLot)
+            lotSize = minLot;
+        
+        return lotSize;
+    }
+    
+    // Fallback to original calculation if risk manager not available
     double balance = accountInfo.Balance();
     
     // Use dynamic risk adjustment
@@ -2914,7 +3204,11 @@ void CreateDashboard()
     CreateLabel(prefix + "ATRH1", "ATR H1: 0.00", DashboardX + 10, DashboardY + 420, 8, DashboardTextColor);
     CreateLabel(prefix + "ATRM5", "ATR M5: 0.00", DashboardX + 10, DashboardY + 445, 8, DashboardTextColor);
     CreateLabel(prefix + "Status", "Status: Active", DashboardX + 10, DashboardY + 470, 9, clrLime);
-    CreateLabel(prefix + "Error", "", DashboardX + 10, DashboardY + 495, 7, clrRed);
+    CreateLabel(prefix + "RiskInfo", "Risk: Loading...", DashboardX + 10, DashboardY + 495, 8, clrAqua);
+    CreateLabel(prefix + "PerfInfo", "Performance: Loading...", DashboardX + 10, DashboardY + 520, 8, clrAqua);
+    CreateLabel(prefix + "LondonStats", "", DashboardX + 10, DashboardY + 545, 7, DashboardTextColor);
+    CreateLabel(prefix + "NYStats", "", DashboardX + 10, DashboardY + 565, 7, DashboardTextColor);
+    CreateLabel(prefix + "Error", "", DashboardX + 10, DashboardY + 590, 7, clrRed);
 }
 
 //+------------------------------------------------------------------+
@@ -2990,6 +3284,8 @@ void UpdateDashboard()
     // Validation with strategy mode
     string validationText = StringFormat("Validation: %d/11 (Min:%d)", 
                                          currentValidation.totalPoints, MinValidationPoints);
+    if(UseWeightedScoring)
+        validationText += StringFormat(" [Score:%.1f]", currentValidation.weightedScore);
     if(UseEssentialOnly)
         validationText += " [Essential Only]";
     else if(EntryStrategy == STRATEGY_BREAKOUT)
@@ -3075,6 +3371,29 @@ void UpdateDashboard()
     ObjectSetString(0, prefix + "Status", OBJPROP_TEXT, statusText);
     ObjectSetInteger(0, prefix + "Status", OBJPROP_COLOR, statusColor);
     
+    // Risk Manager Info
+    if(CheckPointer(riskManager) == POINTER_DYNAMIC)
+    {
+        string riskInfo = StringFormat("Risk: %.2f%% | DD: %.1f%% | Streak: W%d L%d",
+                                       riskManager.GetAdjustedRiskPercent(),
+                                       riskManager.GetCurrentDrawdown(),
+                                       riskManager.GetConsecutiveWins(),
+                                       riskManager.GetConsecutiveLosses());
+        ObjectSetString(0, prefix + "RiskInfo", OBJPROP_TEXT, riskInfo);
+    }
+    
+    // Performance Tracker Info
+    if(EnablePerformanceTracking && CheckPointer(perfTracker) == POINTER_DYNAMIC)
+    {
+        ObjectSetString(0, prefix + "PerfInfo", OBJPROP_TEXT, perfTracker.GetDiagnosticSummary());
+        
+        if(ShowSessionStats)
+        {
+            ObjectSetString(0, prefix + "LondonStats", OBJPROP_TEXT, perfTracker.GetSessionSummary("LONDON"));
+            ObjectSetString(0, prefix + "NYStats", OBJPROP_TEXT, perfTracker.GetSessionSummary("NEWYORK"));
+        }
+    }
+    
     // Error
     ObjectSetString(0, prefix + "Error", OBJPROP_TEXT, lastErrorMsg);
 }
@@ -3105,6 +3424,11 @@ void DeleteDashboard()
     ObjectDelete(0, prefix + "ATRH1");
     ObjectDelete(0, prefix + "ATRM5");
     ObjectDelete(0, prefix + "Status");
+    ObjectDelete(0, prefix + "RiskInfo");
+    ObjectDelete(0, prefix + "PerfInfo");
+    ObjectDelete(0, prefix + "LondonStats");
+    ObjectDelete(0, prefix + "NYStats");
+    ObjectDelete(0, prefix + "NearMiss");
     ObjectDelete(0, prefix + "Error");
 }
 //+------------------------------------------------------------------+
